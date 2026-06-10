@@ -110,3 +110,54 @@ def instrument_workflow(wf: Any, registry: MetricsRegistry) -> None:
 
     wf.run = _instrumented_run
     setattr(wf, _SENTINEL, True)
+
+
+def instrument_llm(provider: Any, registry: MetricsRegistry) -> None:
+    """Attach LLM metrics: calls_total{outcome} + duration + tokens_total{direction}."""
+    if getattr(provider, _SENTINEL, False):
+        return
+
+    calls_counter = registry.counter(
+        "agentforge_llm_calls_total",
+        "Total LLM API calls",
+        label_names=("provider", "outcome"),  # outcome: success|error
+    )
+    call_duration = registry.histogram(
+        "agentforge_llm_call_duration_seconds",
+        "LLM call latency in seconds",
+        label_names=("provider",),
+    )
+    tokens_counter = registry.counter(
+        "agentforge_llm_tokens_total",
+        "Total LLM tokens consumed",
+        label_names=("provider", "direction"),  # direction: in|out
+    )
+
+    provider_name = type(provider).__name__
+    _orig = provider._do_chat
+
+    def _wrap(system, user, *args, **kwargs):
+        t0 = time.monotonic()
+        outcome = "success"
+        result = None
+        try:
+            result = _orig(system, user, *args, **kwargs)
+            return result
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            call_duration.labels(provider=provider_name).observe(time.monotonic() - t0)
+            calls_counter.labels(provider=provider_name, outcome=outcome).inc()
+            if outcome == "success" and result is not None:
+                if getattr(result, "tokens_in", None) is not None:
+                    tokens_counter.labels(
+                        provider=provider_name, direction="in"
+                    ).inc(result.tokens_in)
+                if getattr(result, "tokens_out", None) is not None:
+                    tokens_counter.labels(
+                        provider=provider_name, direction="out"
+                    ).inc(result.tokens_out)
+
+    provider._do_chat = _wrap
+    setattr(provider, _SENTINEL, True)
