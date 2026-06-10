@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from agentforge.billing.plans import Plan, is_valid_plan
+
 
 def _hash_key(api_key: str) -> str:
     """SHA-256 of the API key, returned as hex."""
@@ -51,6 +53,10 @@ class TenantRegistry:
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
             if "tenants" not in self._data:
                 self._data["tenants"] = {}
+            # Backfill plan field for legacy entries (v0.3.0 and earlier)
+            for entry in self._data["tenants"].values():
+                if "plan" not in entry:
+                    entry["plan"] = Plan.FREE.value
         except (json.JSONDecodeError, OSError):
             # Corrupt registry — start fresh. Operator must restore from
             # backup if this happens. We log rather than raise because
@@ -99,10 +105,28 @@ class TenantRegistry:
         key = api_key or _generate_api_key()
         self._data["tenants"][tenant_id] = {
             "api_key_hash": _hash_key(key),
+            "plan": Plan.FREE.value,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save()
         return key
+
+    def get_plan(self, tenant_id: str) -> Plan:
+        """Return the plan tier for a tenant. Defaults to FREE if field missing (legacy)."""
+        entry = self._data["tenants"].get(tenant_id)
+        if entry is None:
+            raise ValueError(f"tenant {tenant_id!r} not found")
+        raw = entry.get("plan", Plan.FREE.value)
+        if not is_valid_plan(raw):
+            return Plan.FREE  # corrupt data — silent default
+        return Plan(raw)
+
+    def set_plan(self, tenant_id: str, plan: Plan) -> None:
+        """Change a tenant's plan tier. Raises if tenant not found."""
+        if tenant_id not in self._data["tenants"]:
+            raise ValueError(f"tenant {tenant_id!r} not found")
+        self._data["tenants"][tenant_id]["plan"] = plan.value
+        self._save()
 
     def lookup(self, api_key: str) -> Optional[str]:
         """Reverse-lookup: given an API key, return the tenant_id (or None)."""
