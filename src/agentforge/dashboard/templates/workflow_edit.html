@@ -16,6 +16,9 @@
       <input type="text" name="name" id="name" value="{{ name }}" readonly>
 
       <label for="yaml_content">YAML</label>
+      {# Plain textarea — CodeMirror below enhances it with syntax highlighting,
+         line numbers, and a YAML mode if JS is enabled. The textarea stays in
+         the form so the page works without JS too. #}
       <textarea name="yaml_content" id="yaml_content" rows="20" style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.85rem; tab-size: 2;">{{ yaml_text }}</textarea>
 
       <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
@@ -31,4 +34,28 @@
     <p class="muted">Step types: <code>receive</code>, <code>respond</code>, <code>llm_call</code>, <code>branch</code>, <code>loop</code>, <code>wait</code>, <code>noop</code>.</p>
     <p class="muted">Save with invalid YAML and the file is rejected — no half-written state.</p>
   </div>
+
+  {# CodeMirror 6 — loaded from esm.sh. Module import so we can pull in
+     the YAML language extension. On submit, CM writes the buffer back to
+     the underlying textarea so the form posts work the same. #}
+  <link rel="stylesheet" href="https://esm.sh/codemirror@6.0.1/dist/codemirror.min.css">
+  <script type="module">
+    import {EditorView, basicSetup} from "https://esm.sh/codemirror@6.0.1"
+    import {yaml} from "https://esm.sh/@codemirror/lang-yaml@6.1.1"
+    import {EditorState} from "https://esm.sh/@codemirror/state@6.4.1"
+
+    const ta = document.getElementById("yaml_content")
+    if (ta) {
+      const view = new EditorView({
+        parent: ta.parentNode,
+        doc: ta.value,
+        extensions: [basicSetup, yaml()],
+      })
+      // On form submit, write CM buffer back to the textarea so the POST
+      // payload matches what the user sees.
+      ta.form.addEventListener("submit", () => {
+        ta.value = view.state.doc.toString()
+      })
+    }
+  </script>
 {% endblock %}
