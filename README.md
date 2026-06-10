@@ -220,6 +220,10 @@ Self-hosted web UI for managing tenants, workflows, and usage. FastAPI + Jinja2 
 - **Tenant detail** (`/dashboard/tenants/{id}`) — full quota detail + plan switcher (free / pro / enterprise) + one-time API key display on creation
 - **Workflows** (`/dashboard/workflows`) — list of `.yaml` files in the workflows dir
 - **Workflow detail** (`/dashboard/workflows/{name}`) — raw YAML view + "Run via API" form
+- **New workflow** (`/dashboard/workflows/new`) — form with name + YAML textarea, pre-filled with a starter template
+- **Edit workflow** (`/dashboard/workflows/{name}/edit`) — same form, pre-filled with the current YAML; save overwrites
+
+**Workflow editor (v0.5.2):** full create / edit / save / delete cycle in the browser. Server-side YAML validation rejects empty content, syntax errors, non-mapping roots, and missing `name` keys — invalid saves return `400` with the parser error rendered in the page (no half-written files). Writes are atomic (`tempfile` + `os.replace`) so a crash mid-save never leaves a broken file. No syntax highlighting yet (plain `<textarea>`) and no locking (last-write-wins); both are follow-ups.
 
 **Tech:** Jinja2 templates render server-side; HTMX is loaded from a CDN for the few interactions (mostly just `<form>` posts — the dashboard is functional even with JS disabled). CSS is self-contained (`src/agentforge/dashboard/static/dashboard.css`), no Tailwind, no preprocessor.
 
@@ -280,7 +284,7 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · Dark mode · Mobile-first responsive UI.
+OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · CodeMirror syntax highlighting in the editor · Workflow versioning + diff view · Dark mode · Mobile-first responsive UI.
 
 These were identified by both the HAMILLER and NEMESIS cross-review.
 Each is a multi-day project; not in this MVP cut. Phase 7 (Observability), Phase 8 (Billing/Quota), and Phase 9 (Web Dashboard) shipped the structured-logging + metrics + health-check + quota + UI foundation; the roadmap items above build on it.
