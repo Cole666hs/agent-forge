@@ -35,3 +35,27 @@ def test_valid_intents_constant():
     assert "respond" in VALID_INTENTS
     assert "ping" in VALID_INTENTS
     assert "ack" in VALID_INTENTS
+
+
+def test_is_expired_false_when_no_expiry():
+    m = Message(from_="a", to="b", content="x")
+    assert m.is_expired() is False
+
+
+def test_is_expired_true_when_in_past():
+    from datetime import datetime, timedelta, timezone
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    m = Message(from_="a", to="b", content="x", expires_at=past)
+    assert m.is_expired() is True
+
+
+def test_is_expired_false_when_in_future():
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    m = Message(from_="a", to="b", content="x", expires_at=future)
+    assert m.is_expired() is False
+
+
+def test_is_expired_tolerates_malformed_timestamp():
+    m = Message(from_="a", to="b", content="x", expires_at="not-a-date")
+    assert m.is_expired() is False  # malformed → treat as not expired

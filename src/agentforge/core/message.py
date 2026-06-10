@@ -50,3 +50,20 @@ class Message:
         d.setdefault("intent", "respond")
         d.setdefault("context_refs", [])
         return cls(**d)
+
+    def is_expired(self) -> bool:
+        """True iff expires_at is set and the timestamp is in the past.
+
+        Malformed expires_at values are treated as "not expired" rather
+        than raising — the message is still readable; only TTL filtering
+        silently degrades.
+        """
+        if not self.expires_at:
+            return False
+        try:
+            return (
+                datetime.now(timezone.utc)
+                >= datetime.fromisoformat(self.expires_at)
+            )
+        except (ValueError, TypeError):
+            return False

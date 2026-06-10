@@ -2,5 +2,12 @@
 
 from __future__ import annotations
 
+from agentforge.core import VALID_INTENTS, FileMailbox, Mailbox, Message
+
 __version__ = "0.1.0"
-__all__: list[str] = []  # populated as modules migrate in later phases
+__all__ = [
+    "FileMailbox",
+    "Mailbox",
+    "Message",
+    "VALID_INTENTS",
+]
