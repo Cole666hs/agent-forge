@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Runs: {{ workflow_name }} — agentforge{% endblock %}
+{% block content %}
+  <h1>Runs: {{ workflow_name }}</h1>
+  <p><a href="/dashboard/workflows/{{ workflow_name }}">← {{ workflow_name }}</a></p>
+
+  <div class="card"
+       hx-get="/dashboard/partials/runs/{{ workflow_name }}"
+       hx-trigger="every 5s"
+       hx-swap="innerHTML">
+    <h2>Run history</h2>
+    {% if runs %}
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Agent</th>
+            <th>Status</th>
+            <th>Duration</th>
+            <th>Started</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in runs %}
+            {% include "_partial_runs_rows.html" %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No runs yet for <code>{{ workflow_name }}</code>. The first run shows up here within 5s of starting.</p>
+    {% endif %}
+  </div>
+{% endblock %}

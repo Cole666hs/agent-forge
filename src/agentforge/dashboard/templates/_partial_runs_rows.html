@@ -1,0 +1,22 @@
+{# Single run row — used both for initial page render and HTMX polling.
+   Polling replaces the entire content of the parent <div> with the
+   rendered rows. Status is color-coded: success=green, error=red,
+   quota_exceeded=yellow, anything else=gray. #}
+{% for r in runs %}
+<tr>
+  <td><code>{{ r.id }}</code></td>
+  <td>{{ r.agent }}</td>
+  <td>
+    <span class="badge" style="
+      background:
+        {% if r.status == 'success' %}var(--ok-bg); color: var(--ok)
+        {% elif r.status == 'error' %}var(--error-bg); color: var(--error)
+        {% elif r.status == 'quota_exceeded' %}var(--warning-bg); color: var(--warning)
+        {% else %}#e5e7eb; color: var(--text){% endif %};
+    ">{{ r.status }}</span>
+  </td>
+  <td>{{ "%.2f"|format(r.duration_seconds) }}s</td>
+  <td class="muted">{{ r.started_at }}</td>
+  <td class="muted">{% if r.error %}{{ r.error[:80] }}{% endif %}</td>
+</tr>
+{% endfor %}

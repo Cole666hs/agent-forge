@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from agentforge.billing.plans import Plan
 from agentforge.billing.quota import quota_status
 from agentforge.billing.usage import UsageStore
+from agentforge.core.runs import RunStore
 from agentforge.dashboard.auth import (
     COOKIE_NAME,
     get_registry,
@@ -293,6 +294,41 @@ def workflow_detail(request: Request, name: str) -> Response:
     return templates.get_template("workflow_detail.html").render(
         request=request, auth_tenant=auth_tenant,
         name=name, yaml_text=yaml_text,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workflow run history (v0.5.4)
+# ---------------------------------------------------------------------------
+# NOTE: route ordering matters again — `/workflows/{name}/runs` MUST be
+# registered before `/workflows/{name}` for the same reason as `/new`:
+# FastAPI's pattern matcher binds the dynamic segment to "runs" otherwise
+# and tries to load workflows_dir/runs.yaml. (The `name != "runs"` guard
+# would also work but is more fragile than just declaring the static
+# segments first.)
+
+@router.get("/workflows/{name}/runs", response_class=HTMLResponse)
+def workflow_runs(request: Request, name: str) -> Response:
+    """Render the runs history page for one workflow. Initial render
+    pre-fills the table; HTMX polls /partials/runs every 5s for updates."""
+    tenant_from_cookie_or_401(request)
+    run_store: RunStore = request.app.state.run_store
+    runs = run_store.list_runs(name, limit=50)
+    templates = request.app.state.templates
+    return templates.get_template("workflow_runs.html").render(
+        request=request, workflow_name=name, runs=runs,
+    )
+
+
+@router.get("/partials/runs/{name}", response_class=HTMLResponse)
+def partial_runs(request: Request, name: str) -> Response:
+    """HTMX fragment: rendered rows of the runs table for one workflow."""
+    tenant_from_cookie_or_401(request)
+    run_store: RunStore = request.app.state.run_store
+    runs = run_store.list_runs(name, limit=50)
+    templates = request.app.state.templates
+    return templates.get_template("_partial_runs_rows.html").render(
+        request=request, workflow_name=name, runs=runs,
     )
 
 

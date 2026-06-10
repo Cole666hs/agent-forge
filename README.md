@@ -222,8 +222,13 @@ Self-hosted web UI for managing tenants, workflows, and usage. FastAPI + Jinja2 
 - **Workflow detail** (`/dashboard/workflows/{name}`) — raw YAML view + "Run via API" form
 - **New workflow** (`/dashboard/workflows/new`) — form with name + YAML textarea, pre-filled with a starter template
 - **Edit workflow** (`/dashboard/workflows/{name}/edit`) — same form, pre-filled with the current YAML; save overwrites
+- **Run history** (`/dashboard/workflows/{name}/runs`) — table of past runs (id, agent, status, duration, started, error) auto-refreshes every 5s via HTMX polling
 
 **Workflow editor (v0.5.2):** full create / edit / save / delete cycle in the browser. Server-side YAML validation rejects empty content, syntax errors, non-mapping roots, and missing `name` keys — invalid saves return `400` with the parser error rendered in the page (no half-written files). Writes are atomic (`tempfile` + `os.replace`) so a crash mid-save never leaves a broken file. No syntax highlighting yet (plain `<textarea>`) and no locking (last-write-wins); both are follow-ups.
+
+**CodeMirror editor (v0.5.3):** the YAML textarea is enhanced with CodeMirror 6 (loaded from esm.sh CDN) — syntax highlighting, line numbers, and YAML language mode. The form still works without JS (plain textarea fallback). Real-browser verification needed for the actual highlighting.
+
+**Run history (v0.5.4):** every `/v1/workflows/{name}/run` call records a `RunRecord` (id, workflow, tenant, agent, started_at, ended_at, status, duration_seconds, error) to `runs.json`. Per-workflow cap of 100 most recent runs. Dashboard page polls `/partials/runs/{name}` every 5s; rows are color-coded by status (green=success, red=error, yellow=quota_exceeded). Out of scope: per-run log streaming, span/trace correlation, retention policies.
 
 **Tech:** Jinja2 templates render server-side; HTMX is loaded from a CDN for the few interactions (mostly just `<form>` posts — the dashboard is functional even with JS disabled). CSS is self-contained (`src/agentforge/dashboard/static/dashboard.css`), no Tailwind, no preprocessor.
 
@@ -284,7 +289,7 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · CodeMirror syntax highlighting in the editor · Workflow versioning + diff view · Dark mode · Mobile-first responsive UI.
+OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · Workflow versioning + diff view · Dark mode · Mobile-first responsive UI.
 
 These were identified by both the HAMILLER and NEMESIS cross-review.
 Each is a multi-day project; not in this MVP cut. Phase 7 (Observability), Phase 8 (Billing/Quota), and Phase 9 (Web Dashboard) shipped the structured-logging + metrics + health-check + quota + UI foundation; the roadmap items above build on it.

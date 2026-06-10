@@ -36,6 +36,7 @@ from agentforge.billing.usage import UsageStore
 from agentforge.billing.quota import quota_status, enforce_quota, QuotaExceededError
 from agentforge.core.mailbox import FileMailbox
 from agentforge.core.message import Message
+from agentforge.core.runs import RunRecord, RunStore
 from agentforge.dashboard import router as dashboard_router
 from agentforge.dashboard.router import get_templates
 from agentforge.observability.instrumentation import instrument_mailbox
@@ -252,9 +253,13 @@ def create_app(
         wf = Workflow.from_yaml(wf_path)
         mbox = mailbox_for(tenant_id)
         state = State(tenant_id=tenant_id)
-        # No LLM adapter wired by default — workflows with llm_call steps
-        # will fail unless caller configures one. The CLI subcommand
-        # `agentforge serve --llm <provider>` does this wiring.
+        # Run history record. Started now; ended + status filled in finally.
+        import uuid
+        from datetime import datetime, timezone
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        started_at = datetime.now(timezone.utc).isoformat()
+        error_msg: str | None = None
+        status_label = "success"
         try:
             await wf.run(state=state, mailbox=mbox, llm=None,
                          agent_name=body.agent, state_db=state_db)
@@ -264,6 +269,18 @@ def create_app(
             # instrument_llm) so this branch is reachable only when a
             # future change wires per-tenant instrumentation. Keeping
             # the handler so the 429 path is tested and ready.
+            ended_at = datetime.now(timezone.utc).isoformat()
+            duration = (datetime.fromisoformat(ended_at)
+                        - datetime.fromisoformat(started_at)).total_seconds()
+            try:
+                RunStore(path=mailbox_root.parent / "runs.json").record(RunRecord(
+                    id=run_id, workflow=name, tenant_id=tenant_id,
+                    agent=body.agent, started_at=started_at, ended_at=ended_at,
+                    status="quota_exceeded", duration_seconds=duration,
+                    error=str(e),
+                ))
+            except Exception:
+                pass  # don't fail the request if history write fails
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -276,7 +293,24 @@ def create_app(
                 headers={"Retry-After": "2592000"},  # 30 days
             )
         except WorkflowError as e:
+            status_label = "error"
+            error_msg = str(e)
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            # Record success + error runs (quota_exceeded handled above).
+            if status_label in ("success", "error") and 'wf_path' in dir():
+                ended_at = datetime.now(timezone.utc).isoformat()
+                duration = (datetime.fromisoformat(ended_at)
+                            - datetime.fromisoformat(started_at)).total_seconds()
+                try:
+                    RunStore(path=mailbox_root.parent / "runs.json").record(RunRecord(
+                        id=run_id, workflow=name, tenant_id=tenant_id,
+                        agent=body.agent, started_at=started_at, ended_at=ended_at,
+                        status=status_label, duration_seconds=duration,
+                        error=error_msg,
+                    ))
+                except Exception:
+                    pass  # don't fail the request if history write fails
         return RunWorkflowResponse(state_keys=sorted(state._data.keys()))
 
     # Wrap the whole ASGI stack with RequestIdMiddleware. Starlette runs
@@ -294,6 +328,7 @@ def create_app(
     app.state.templates = get_templates()
     app.state.usage_path = mailbox_root.parent / "usage.json"
     app.state.workflows_dir = workflows_dir
+    app.state.run_store = RunStore(path=mailbox_root.parent / "runs.json")
 
     # Mount the static files directory for the dashboard CSS.
     from fastapi.staticfiles import StaticFiles
