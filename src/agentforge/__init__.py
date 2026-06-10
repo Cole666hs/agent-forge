@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from agentforge.adapters import (
     BaseChannelAdapter, BaseLLMAdapter,
-    BaseOpenAICompatLLMAdapter, ChatResult, DiscordChannelAdapter, LLMError,
-    MiniMaxAdapter, OllamaAdapter, OpenRouterAdapter, TelegramChannelAdapter,
-    WebhookChannelAdapter, WebhookError, make_provider,
+    BaseOpenAICompatLLMAdapter, ChatResult, DiscordChannelAdapter, EmailChannelAdapter,
+    EmailError, LLMError, MiniMaxAdapter, OllamaAdapter, OpenRouterAdapter,
+    TelegramChannelAdapter, WebhookChannelAdapter, WebhookError, make_provider,
 )
 from agentforge.core import VALID_INTENTS, FileMailbox, Mailbox, Message
 from agentforge.workflows import State, Step, Workflow, WorkflowError, register_step_type
@@ -17,7 +17,7 @@ __all__ = [
     "BaseChannelAdapter", "BaseLLMAdapter",
     "BaseOpenAICompatLLMAdapter", "OpenRouterAdapter", "MiniMaxAdapter",
     "OllamaAdapter", "make_provider", "ChatResult", "LLMError",
-    "DiscordChannelAdapter", "TelegramChannelAdapter",
-    "WebhookChannelAdapter", "WebhookError",
+    "DiscordChannelAdapter", "EmailChannelAdapter", "EmailError",
+    "TelegramChannelAdapter", "WebhookChannelAdapter", "WebhookError",
     "State", "Step", "Workflow", "WorkflowError", "register_step_type",
 ]
