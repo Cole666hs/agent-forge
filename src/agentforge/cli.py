@@ -145,6 +145,8 @@ def init(name: str) -> None:
               help="Seconds between inbox polls when --watch is set.")
 @click.option("--llm", default="auto", show_default=True,
               help='LLM provider: "auto"|"openrouter"|"minimax"|"ollama"|"" (none).')
+@click.option("--tenant", default=None,
+              help="Tenant ID for billing/quota enforcement (optional, pairs with --tenants + --usage).")
 def run(
     workflow: str,
     mailbox: str,
@@ -152,6 +154,7 @@ def run(
     watch: bool,
     watch_interval: int,
     llm: str,
+    tenant: str | None,
 ) -> None:
     """Execute a workflow file.
 
@@ -175,6 +178,19 @@ def run(
     llm_provider = _resolve_llm(llm)
     if llm_provider is not None:
         click.echo(f"  llm: {type(llm_provider).__name__}")
+        # If --tenant was given, wire billing/quota enforcement.
+        if tenant:
+            from agentforge.billing.usage import UsageStore
+            from agentforge.observability.instrumentation import instrument_llm
+            from agentforge.observability.metrics import get_registry
+            from agentforge.tenants.registry import TenantRegistry
+            registry = TenantRegistry(path=Path("./tenants.json").resolve())
+            usage = UsageStore(path=Path("./usage.json").resolve())
+            instrument_llm(
+                llm_provider, registry=get_registry(),
+                tenants=registry, usage=usage, tenant_id=tenant,
+            )
+            click.echo(f"  billing: enforced for tenant {tenant!r}")
     try:
         if watch:
             asyncio.run(_watch_loop(wf, mbox, agent, watch_interval, llm_provider))
