@@ -223,7 +223,9 @@ Self-hosted web UI for managing tenants, workflows, and usage. FastAPI + Jinja2 
 
 **Tech:** Jinja2 templates render server-side; HTMX is loaded from a CDN for the few interactions (mostly just `<form>` posts — the dashboard is functional even with JS disabled). CSS is self-contained (`src/agentforge/dashboard/static/dashboard.css`), no Tailwind, no preprocessor.
 
-**Self-hosted scope (v0.5.0):** no real-time updates (refresh the page to see new data), no charts (CSS bars only), no dark mode, no mobile-first responsive (works on desktop, degrades gracefully), no 2FA / SSO (the API key is the only credential). These are out of scope for the self-hosted edition.
+**Real-time updates (v0.5.1):** the quota card on the Overview page and the tenant rows on the Tenants page auto-refresh every 5 seconds via HTMX polling (`hx-get` + `hx-trigger="every 5s"` + `hx-swap="innerHTML"`). The polled endpoints return HTML fragments only (`/dashboard/partials/usage`, `/dashboard/partials/tenants`) — no layout, no `<html>` wrapper, just the bit that changed. No WebSocket infrastructure needed.
+
+**Self-hosted scope (v0.5.1):** polling is 5-second resolution (faster would mean more requests, slower feels stale); no per-row updates (the whole `<tbody>` re-renders); no push notifications (browser tab must be open); no WebSocket streaming (planned for a future version if 5s polling proves insufficient).
 
 ## Billing & quota
 
@@ -278,7 +280,7 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · Real-time dashboard updates (WebSockets) · Dark mode · Mobile-first responsive UI.
+OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · Dark mode · Mobile-first responsive UI.
 
 These were identified by both the HAMILLER and NEMESIS cross-review.
 Each is a multi-day project; not in this MVP cut. Phase 7 (Observability), Phase 8 (Billing/Quota), and Phase 9 (Web Dashboard) shipped the structured-logging + metrics + health-check + quota + UI foundation; the roadmap items above build on it.
