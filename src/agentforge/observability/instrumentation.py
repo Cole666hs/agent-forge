@@ -112,15 +112,28 @@ def instrument_workflow(wf: Any, registry: MetricsRegistry) -> None:
     setattr(wf, _SENTINEL, True)
 
 
-def instrument_llm(provider: Any, registry: MetricsRegistry) -> None:
-    """Attach LLM metrics: calls_total{outcome} + duration + tokens_total{direction}."""
+def instrument_llm(provider: Any, registry: Any,
+                  tenants: Any = None,
+                  usage: Any = None,
+                  tenant_id: str = "") -> None:
+    """Attach LLM metrics + optional quota enforcement.
+
+    If `tenants` and `usage` are provided (and `tenant_id` is set), every
+    call goes through enforce_quota(): over-limit calls raise
+    QuotaExceededError BEFORE the LLM is invoked. Tokens are recorded
+    on success only — failed calls don't consume quota (matches industry
+    practice: don't penalize for transient errors).
+
+    For multi-tenant serve (shared LLM provider), pass tenants=None and
+    rely on per-step enforcement inside the workflow engine instead.
+    """
     if getattr(provider, _SENTINEL, False):
         return
 
     calls_counter = registry.counter(
         "agentforge_llm_calls_total",
         "Total LLM API calls",
-        label_names=("provider", "outcome"),  # outcome: success|error
+        label_names=("provider", "outcome"),
     )
     call_duration = registry.histogram(
         "agentforge_llm_call_duration_seconds",
@@ -130,9 +143,13 @@ def instrument_llm(provider: Any, registry: MetricsRegistry) -> None:
     tokens_counter = registry.counter(
         "agentforge_llm_tokens_total",
         "Total LLM tokens consumed",
-        label_names=("provider", "direction"),  # direction: in|out
+        label_names=("provider", "direction"),
     )
 
+    # Lazy imports to avoid circular dependency with billing module
+    from agentforge.billing.quota import enforce_quota, QuotaExceededError
+
+    billing_enabled = tenants is not None and usage is not None and bool(tenant_id)
     provider_name = type(provider).__name__
     _orig = provider._do_chat
 
@@ -141,8 +158,22 @@ def instrument_llm(provider: Any, registry: MetricsRegistry) -> None:
         outcome = "success"
         result = None
         try:
+            # Quota pre-flight (only if wired). If at/over limit, block
+            # before paying for the LLM call.
+            if billing_enabled:
+                enforce_quota(tenants, usage, tenant_id, tokens_to_add=0)
             result = _orig(system, user, *args, **kwargs)
+            # Post-call: record actual tokens consumed
+            if result is not None and billing_enabled:
+                t_in = getattr(result, "tokens_in", None) or 0
+                t_out = getattr(result, "tokens_out", None) or 0
+                total = t_in + t_out
+                if total > 0:
+                    enforce_quota(tenants, usage, tenant_id, tokens_to_add=total)
             return result
+        except QuotaExceededError:
+            outcome = "quota_exceeded"
+            raise
         except Exception:
             outcome = "error"
             raise
