@@ -40,6 +40,40 @@ def test_filemailbox_creates_root_on_init(tmp_path: Path):
     assert root.is_dir()
 
 
+def test_filemailbox_with_tenant_id_writes_under_tenant_dir(tmp_path: Path):
+    """When tenant_id is set, paths are root/<tenant>/<agent>/..."""
+    mbox = FileMailbox(root=tmp_path, tenant_id="acme")
+    msg = Message(from_="alice", to="bob", content="x")
+    mbox.send(msg)
+    outbox = tmp_path / "acme" / "alice" / "outbox"
+    assert (outbox / f"{msg.id}.json").exists()
+
+
+def test_two_tenants_are_isolated(tmp_path: Path):
+    """Two tenants with the same agent name don't see each other's messages."""
+    a = FileMailbox(root=tmp_path, tenant_id="acme")
+    b = FileMailbox(root=tmp_path, tenant_id="corp")
+    a.send(Message(from_="alice", to="bob", content="for-acme"))
+    b.send(Message(from_="alice", to="bob", content="for-corp"))
+    assert len(a.list_inbox("bob", include_read=True)) == 1
+    assert a.list_inbox("bob", include_read=True)[0].content == "for-acme"
+    assert b.list_inbox("bob", include_read=True)[0].content == "for-corp"
+
+
+def test_invalid_tenant_id_rejected(tmp_path: Path):
+    """tenant_id must match [a-z0-9_-]+ — path-traversal guard."""
+    with pytest.raises(ValueError, match="tenant_id"):
+        FileMailbox(root=tmp_path, tenant_id="../etc")
+
+
+def test_no_tenant_id_uses_root_directly(tmp_path: Path):
+    """Backward compat: no tenant_id → paths are root/<agent>/..."""
+    mbox = FileMailbox(root=tmp_path)  # no tenant
+    msg = Message(from_="alice", to="bob", content="x")
+    mbox.send(msg)
+    assert (tmp_path / "alice" / "outbox" / f"{msg.id}.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # Send — atomic + idempotent + validated
 # ---------------------------------------------------------------------------

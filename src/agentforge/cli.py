@@ -36,11 +36,18 @@ logger = logging.getLogger(__name__)
 
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="agentforge")
+@click.option("--mailbox-root", default="./mailbox", show_default=True,
+              help="Mailbox root directory (overrides the per-command default).")
+@click.option("--tenants", default="./tenants.json", show_default=True,
+              help="Path to the tenant registry JSON file.")
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(ctx: click.Context, mailbox_root: str, tenants: str) -> None:
     """agentforge — self-hosted multi-agent orchestration."""
+    # Stash on context so subcommands can pick them up
+    ctx.ensure_object(dict)
+    ctx.obj["mailbox_root"] = Path(mailbox_root)
+    ctx.obj["tenants_path"] = Path(tenants)
     if ctx.invoked_subcommand is None:
-        # No subcommand → show help
         click.echo(ctx.get_help())
         ctx.exit(0)
 
@@ -222,6 +229,104 @@ def status(mailbox: str) -> None:
     for name in agents:
         inbox = mbox.count_unread(name)
         click.echo(f"    - {name}: {inbox} unread")
+
+
+# ---------------------------------------------------------------------------
+# tenants
+# ---------------------------------------------------------------------------
+
+@cli.group()
+@click.pass_context
+def tenants(ctx: click.Context) -> None:
+    """Manage tenants and their API keys."""
+    pass
+
+
+@tenants.command(name="add")
+@click.argument("tenant_id")
+@click.option("--api-key", default=None,
+              help="Provide an API key instead of generating one. "
+                   "If omitted, a random key is printed ONCE.")
+@click.pass_context
+def tenants_add(ctx: click.Context, tenant_id: str, api_key: str | None) -> None:
+    """Register a new tenant."""
+    from agentforge.tenants.registry import TenantRegistry
+    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    try:
+        key = reg.add(tenant_id, api_key=api_key)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        ctx.exit(1)
+    click.echo(f"tenant {tenant_id!r} registered.")
+    click.echo(f"API key: {key}")
+    click.echo("(store this now — it will not be shown again)")
+
+
+@tenants.command(name="list")
+@click.pass_context
+def tenants_list(ctx: click.Context) -> None:
+    """List all registered tenants."""
+    from agentforge.tenants.registry import TenantRegistry
+    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    names = reg.list_tenants()
+    if not names:
+        click.echo("(no tenants — add one with `agentforge tenants add <id>`)")
+        return
+    for name in names:
+        click.echo(f"  {name}")
+
+
+@tenants.command(name="remove")
+@click.argument("tenant_id")
+@click.pass_context
+def tenants_remove(ctx: click.Context, tenant_id: str) -> None:
+    """Remove a tenant and revoke its API key."""
+    from agentforge.tenants.registry import TenantRegistry
+    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    if reg.remove(tenant_id):
+        click.echo(f"removed {tenant_id!r}")
+    else:
+        click.echo(f"error: tenant {tenant_id!r} not found", err=True)
+        ctx.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8765, show_default=True, type=int)
+@click.option("--state-db", default=None,
+              help="Path to the SQLite state DB (default: <mailbox-root>/../state.db).")
+@click.option("--workflows-dir", default=None,
+              help="Directory of *.yaml workflows (default: <mailbox-root>/../workflows).")
+@click.pass_context
+def serve(
+    ctx: click.Context,
+    host: str,
+    port: int,
+    state_db: str | None,
+    workflows_dir: str | None,
+) -> None:
+    """Run the FastAPI server (HTTP API with multi-tenant auth)."""
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("error: uvicorn not installed. pip install agent-forge[serve]", err=True)
+        ctx.exit(1)
+    from agentforge.serve import create_app
+    mailbox_root = ctx.obj["mailbox_root"]
+    app = create_app(
+        tenants_path=ctx.obj["tenants_path"],
+        mailbox_root=mailbox_root,
+        state_db=Path(state_db) if state_db else None,
+        workflows_dir=Path(workflows_dir) if workflows_dir else None,
+    )
+    click.echo(f"agentforge serving on http://{host}:{port}")
+    click.echo(f"  mailbox: {mailbox_root}")
+    click.echo(f"  tenants: {ctx.obj['tenants_path']}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 # ---------------------------------------------------------------------------

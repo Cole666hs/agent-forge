@@ -9,14 +9,16 @@
 
 ## What's in the box
 
-- **Mailbox** (`agentforge.core.FileMailbox`) — atomic file-based transport, JSON self-healing, path-traversal protection
+- **Mailbox** (`agentforge.core.FileMailbox`) — atomic file-based transport, JSON self-healing, path-traversal protection, **multi-tenant** (`tenant_id` argument scopes all paths)
 - **3 LLM providers** (`OpenRouter`, `MiniMax`, `Ollama`) via the `BaseOpenAICompatLLMAdapter` — async, with retry/backoff/Retry-After
 - **4 channel adapters** (`Webhook`, `Telegram`, `Discord`, `Email`) — all async, HMAC-signed webhooks
-- **YAML workflow engine** (`agentforge.workflows.Workflow`) — `receive` / `llm_call` / `respond` step types, SQLite state persistence, per-step retry
-- **CLI** (`agentforge`) — `init` / `run --watch` / `status`
+- **YAML workflow engine** (`agentforge.workflows.Workflow`) — `receive` / `llm_call` / `respond` step types, SQLite state persistence with **tenant scoping**, per-step retry
+- **Multi-tenant API server** (`agentforge serve`) — FastAPI on `127.0.0.1:8765`, `X-API-Key` auth, tenant-scoped mailbox + workflows
+- **Tenant registry** (`agentforge.tenants.TenantRegistry`) — JSON-backed, keys stored as SHA-256 hashes
+- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `status`
 - **Hardened systemd unit** (`contrib/systemd/agentforge@.service`) — one daemon per agent
 
-**95 tests grün** across 8 commits. Library import is side-effect-free.
+**121 tests grün** across 11 commits. Library import is side-effect-free.
 
 ## Quick start
 

@@ -69,6 +69,50 @@ def test_init_refuses_existing_directory(runner: CliRunner):
 
 
 # ---------------------------------------------------------------------------
+# tenants — multi-tenant management
+# ---------------------------------------------------------------------------
+
+def test_tenants_add_prints_generated_key(runner: CliRunner):
+    """agentforge tenants add <id> creates the tenant and prints the
+    generated API key (one-time display, like moltbook)."""
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        result = runner.invoke(cli, [
+            "--tenants", str(tenants_path), "tenants", "add", "acme",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "acme" in result.output
+        assert "API key:" in result.output
+        # Key was actually written
+        import json
+        data = json.loads(tenants_path.read_text())
+        assert "acme" in data["tenants"]
+
+
+def test_tenants_list_shows_added_tenants(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        # Add two
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "corp"])
+        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "list"])
+        assert result.exit_code == 0
+        assert "acme" in result.output
+        assert "corp" in result.output
+
+
+def test_tenants_remove(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "remove", "acme"])
+        assert result.exit_code == 0
+        # Subsequent list should be empty
+        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "list"])
+        assert "acme" not in result.output
+
+
+# ---------------------------------------------------------------------------
 # run — execute a workflow
 # ---------------------------------------------------------------------------
 

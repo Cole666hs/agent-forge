@@ -37,6 +37,19 @@ def _validate_agent_name(name: str, *, role: str) -> None:
         )
 
 
+def _validate_tenant_id(tenant_id: str) -> None:
+    """Tenants use the same name grammar as agents — defense in depth
+    against path-traversal (e.g. `../etc/passwd` would resolve outside
+    the mailbox root)."""
+    if not tenant_id:
+        # Empty tenant_id is allowed for single-tenant / self-hosted use.
+        return
+    if not _AGENT_NAME_RE.fullmatch(tenant_id):
+        raise ValueError(
+            f"tenant_id must match [a-z0-9_-]+ (or be empty), got {tenant_id!r}"
+        )
+
+
 def _atomic_write_json(path: Path, data: dict) -> None:
     """Crash-safe file write: temp + rename + dir-fsync.
 
@@ -130,9 +143,25 @@ class FileMailbox:
                 outbox/   <- messages FROM this agent
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, tenant_id: str = ""):
+        """File-backed mailbox with atomic writes and JSON self-healing.
+
+        Args:
+          root: base directory for the mailbox
+          tenant_id: when set (non-empty), all paths are prefixed with
+            `<root>/<tenant_id>/...`. Empty string = single-tenant /
+            self-hosted mode. Must match `[a-z0-9_-]+` if set.
+        """
+        _validate_tenant_id(tenant_id)
         self.root = Path(root)
+        self.tenant_id = tenant_id
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def _root(self) -> Path:
+        """Effective root for this tenant: root/<tenant_id> or just root."""
+        if self.tenant_id:
+            return self.root / self.tenant_id
+        return self.root
 
     # -- send --------------------------------------------------------------
 
@@ -181,7 +210,7 @@ class FileMailbox:
         filename order, but their `ts` is monotonic.
         """
         _validate_agent_name(agent_name, role="agent_name")
-        inbox = self.root / agent_name / "inbox"
+        inbox = self._root() / agent_name / "inbox"
         if not inbox.exists():
             return []
         messages: List[Message] = []
@@ -252,7 +281,7 @@ class FileMailbox:
     # -- internal path helpers ---------------------------------------------
 
     def _inbox_path(self, agent: str, msg_id: str) -> Path:
-        return self.root / agent / "inbox" / f"{msg_id}.json"
+        return self._root() / agent / "inbox" / f"{msg_id}.json"
 
     def _outbox_path(self, agent: str, msg_id: str) -> Path:
-        return self.root / agent / "outbox" / f"{msg_id}.json"
+        return self._root() / agent / "outbox" / f"{msg_id}.json"

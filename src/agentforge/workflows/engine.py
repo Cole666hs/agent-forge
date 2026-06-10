@@ -54,8 +54,9 @@ class State:
     (no JSON nested objects in the DB).
     """
 
-    def __init__(self, run_id: Optional[str] = None):
+    def __init__(self, run_id: Optional[str] = None, tenant_id: str = ""):
         self.run_id = run_id or f"run-{id(self)}"
+        self.tenant_id = tenant_id
         self._data: Dict[str, Any] = {}
 
     def set(self, path: str, value: Any) -> None:
@@ -93,33 +94,42 @@ class State:
         return re.sub(r"\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}", sub, template)
 
     def persist(self, db_path: Path) -> None:
-        """Save state to SQLite. Overwrites any prior state for this run_id."""
+        """Save state to SQLite. Overwrites any prior state for this
+        (tenant_id, run_id) pair."""
         with _open_state_db(db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS workflow_state (
+                    tenant_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     key TEXT NOT NULL,
                     value TEXT NOT NULL,
-                    PRIMARY KEY (run_id, key)
+                    PRIMARY KEY (tenant_id, run_id, key)
                 )
             """)
-            conn.execute("DELETE FROM workflow_state WHERE run_id = ?", (self.run_id,))
+            conn.execute(
+                "DELETE FROM workflow_state WHERE tenant_id = ? AND run_id = ?",
+                (self.tenant_id, self.run_id),
+            )
             for path, value in _flatten(self._data):
                 conn.execute(
-                    "INSERT INTO workflow_state (run_id, key, value) VALUES (?, ?, ?)",
-                    (self.run_id, path, json.dumps(value, ensure_ascii=False)),
+                    "INSERT INTO workflow_state (tenant_id, run_id, key, value) "
+                    "VALUES (?, ?, ?, ?)",
+                    (self.tenant_id, self.run_id, path,
+                     json.dumps(value, ensure_ascii=False)),
                 )
             conn.commit()
 
     def hydrate(self, db_path: Path) -> None:
-        """Load state from SQLite. Discards any in-memory data first."""
+        """Load state from SQLite for (tenant_id, run_id). Discards any
+        in-memory data first."""
         self._data = {}
         if not Path(db_path).exists():
             return
         with _open_state_db(db_path) as conn:
             for key, value in conn.execute(
-                "SELECT key, value FROM workflow_state WHERE run_id = ?",
-                (self.run_id,),
+                "SELECT key, value FROM workflow_state "
+                "WHERE tenant_id = ? AND run_id = ?",
+                (self.tenant_id, self.run_id),
             ):
                 self._data = _set_path(self._data, key, json.loads(value))
 
