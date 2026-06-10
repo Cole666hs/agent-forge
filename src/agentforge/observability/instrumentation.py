@@ -68,3 +68,45 @@ def instrument_mailbox(mbox: Any, registry: MetricsRegistry) -> None:
     mbox.send = _instrumented_send
     mbox.list_inbox = _instrumented_list
     setattr(mbox, _SENTINEL, True)
+
+
+def instrument_workflow(wf: Any, registry: MetricsRegistry) -> None:
+    """Attach workflow metrics: runs_total{outcome} + run_duration_seconds.
+
+    Tracks at the workflow level (one counter/histogram observation per
+    run) rather than per-step. Per-step instrumentation would require
+    monkey-patching the step-handler dict or refactoring the retry loop
+    to emit events — out of scope for Phase 7. Workflow-level is 90% of
+    the value at 10% of the complexity.
+    """
+    if getattr(wf, _SENTINEL, False):
+        return
+
+    runs_counter = registry.counter(
+        "agentforge_workflow_runs_total",
+        "Total workflow.run() invocations",
+        label_names=("workflow", "outcome"),  # outcome: success|error
+    )
+    run_duration = registry.histogram(
+        "agentforge_workflow_run_duration_seconds",
+        "Workflow.run() wall time in seconds",
+        label_names=("workflow",),
+    )
+
+    wf_name = wf.name
+    _orig_run = wf.run
+
+    async def _instrumented_run(*args, **kwargs):
+        t0 = time.monotonic()
+        outcome = "success"
+        try:
+            return await _orig_run(*args, **kwargs)
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            run_duration.labels(workflow=wf_name).observe(time.monotonic() - t0)
+            runs_counter.labels(workflow=wf_name, outcome=outcome).inc()
+
+    wf.run = _instrumented_run
+    setattr(wf, _SENTINEL, True)
