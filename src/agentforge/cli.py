@@ -27,6 +27,7 @@ from agentforge import __version__
 from agentforge.adapters.llm import LLMError, make_provider
 from agentforge.adapters.base import BaseLLMAdapter
 from agentforge.core.mailbox import FileMailbox
+from agentforge.observability.logging import configure_logging
 from agentforge.workflows.engine import State, Workflow, WorkflowError
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,20 @@ logger = logging.getLogger(__name__)
               help="Mailbox root directory (overrides the per-command default).")
 @click.option("--tenants", default="./tenants.json", show_default=True,
               help="Path to the tenant registry JSON file.")
+@click.option("--log-format", default=None, envvar="AGENTFORGE_LOG_FORMAT",
+              help='Log format: "json" or "text" (default: text, or $AGENTFORGE_LOG_FORMAT).')
+@click.option("--log-level", default=None, envvar="AGENTFORGE_LOG_LEVEL",
+              help='Log level: "DEBUG"|"INFO"|"WARNING"|"ERROR" (default: INFO, or $AGENTFORGE_LOG_LEVEL).')
 @click.pass_context
-def cli(ctx: click.Context, mailbox_root: str, tenants: str) -> None:
+def cli(ctx: click.Context, mailbox_root: str, tenants: str,
+        log_format: str | None, log_level: str | None) -> None:
     """agentforge — self-hosted multi-agent orchestration."""
     # Stash on context so subcommands can pick them up
     ctx.ensure_object(dict)
     ctx.obj["mailbox_root"] = Path(mailbox_root)
     ctx.obj["tenants_path"] = Path(tenants)
+    # Configure logging once at process start. Idempotent.
+    configure_logging(fmt=log_format, level=log_level)
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
         ctx.exit(0)
