@@ -1,0 +1,41 @@
+[Unit]
+Description=agentforge workflow runner
+Documentation=https://github.com/your-org/agent-forge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentforge
+Group=agentforge
+WorkingDirectory=/opt/agentforge
+EnvironmentFile=-/etc/agentforge/agentforge.env
+ExecStart=/opt/agentforge/.venv/bin/agentforge run /opt/agentforge/workflow.yaml \
+    --mailbox /var/lib/agentforge/mailbox \
+    --agent %i \
+    --watch \
+    --watch-interval 5
+Restart=on-failure
+RestartSec=10
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agentforge
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agentforge
+
+[Install]
+WantedBy=multi-user.target
