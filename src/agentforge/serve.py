@@ -330,6 +330,21 @@ def create_app(
     app.state.workflows_dir = workflows_dir
     app.state.run_store = RunStore(path=mailbox_root.parent / "runs.json")
 
+    # -- OTLP exporter (v0.5.5) --------------------------------------------
+    # If OTEL_EXPORTER_OTLP_ENDPOINT is set, start a background thread that
+    # pushes the metrics registry to the collector every 30s. Standard OTLP
+    # env var name, so users can configure via the same flag their other
+    # OTel-instrumented apps use.
+    import os as _os
+    _otlp_endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if _otlp_endpoint:
+        from agentforge.observability.otlp import OtlpExporter
+        app.state.otlp_exporter = OtlpExporter(
+            endpoint=_otlp_endpoint, registry=get_registry(),
+            service_name="agentforge", service_version="0.5.5",
+        )
+        app.state.otlp_exporter.start()
+
     # Mount the static files directory for the dashboard CSS.
     from fastapi.staticfiles import StaticFiles
     _dashboard_static = Path(__file__).parent / "dashboard" / "static"
