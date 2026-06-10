@@ -43,18 +43,21 @@ logger = logging.getLogger(__name__)
               help="Mailbox root directory (overrides the per-command default).")
 @click.option("--tenants", default="./tenants.json", show_default=True,
               help="Path to the tenant registry JSON file.")
+@click.option("--usage", "usage_path", default="./usage.json", show_default=True,
+              help="Path to the per-tenant usage JSON file (for billing/quota).")
 @click.option("--log-format", default=None, envvar="AGENTFORGE_LOG_FORMAT",
               help='Log format: "json" or "text" (default: text, or $AGENTFORGE_LOG_FORMAT).')
 @click.option("--log-level", default=None, envvar="AGENTFORGE_LOG_LEVEL",
               help='Log level: "DEBUG"|"INFO"|"WARNING"|"ERROR" (default: INFO, or $AGENTFORGE_LOG_LEVEL).')
 @click.pass_context
-def cli(ctx: click.Context, mailbox_root: str, tenants: str,
+def cli(ctx: click.Context, mailbox_root: str, tenants: str, usage_path: str,
         log_format: str | None, log_level: str | None) -> None:
     """agentforge — self-hosted multi-agent orchestration."""
     # Stash on context so subcommands can pick them up
     ctx.ensure_object(dict)
     ctx.obj["mailbox_root"] = Path(mailbox_root)
     ctx.obj["tenants_path"] = Path(tenants)
+    ctx.obj["usage_path"] = Path(usage_path)
     # Configure logging once at process start. Idempotent.
     configure_logging(fmt=log_format, level=log_level)
     if ctx.invoked_subcommand is None:
@@ -305,6 +308,59 @@ def tenants_remove(ctx: click.Context, tenant_id: str) -> None:
     else:
         click.echo(f"error: tenant {tenant_id!r} not found", err=True)
         ctx.exit(1)
+
+
+@tenants.command(name="set-plan")
+@click.argument("tenant_id")
+@click.option("--plan", required=True,
+              type=click.Choice(["free", "pro", "enterprise"]),
+              help="New plan tier.")
+@click.pass_context
+def tenants_set_plan(ctx: click.Context, tenant_id: str, plan: str) -> None:
+    """Change a tenant's plan tier."""
+    from agentforge.billing.plans import Plan
+    from agentforge.tenants.registry import TenantRegistry
+    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    try:
+        reg.set_plan(tenant_id, Plan(plan))
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        ctx.exit(1)
+        return
+    click.echo(f"tenant {tenant_id!r} plan set to {plan}")
+
+
+@tenants.command(name="usage")
+@click.argument("tenant_id")
+@click.pass_context
+def tenants_usage(ctx: click.Context, tenant_id: str) -> None:
+    """Show current-month token usage and quota for a tenant."""
+    from agentforge.billing.plans import PLAN_LIMITS
+    from agentforge.billing.quota import quota_status
+    from agentforge.billing.usage import UsageStore
+    from agentforge.tenants.registry import TenantRegistry
+    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    usage = UsageStore(path=ctx.obj["usage_path"])
+    try:
+        qs = quota_status(reg, usage, tenant_id)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        ctx.exit(1)
+        return
+    limit = PLAN_LIMITS[qs.plan]
+    limit_str = "unlimited" if limit is None else f"{limit:,}"
+    remaining_str = "unlimited" if qs.remaining is None else f"{qs.remaining:,}"
+    pct_str = "n/a" if limit is None else f"{qs.pct * 100:.1f}%"
+    warning_marker = " [WARNING]" if qs.warning else ""
+    exceeded_marker = " [EXCEEDED]" if qs.exceeded else ""
+    click.echo(
+        f"tenant:    {qs.tenant_id}\n"
+        f"plan:      {qs.plan.value}\n"
+        f"used:      {qs.used:,} tokens\n"
+        f"limit:     {limit_str} tokens\n"
+        f"remaining: {remaining_str} tokens\n"
+        f"percent:   {pct_str}{warning_marker}{exceeded_marker}"
+    )
 
 
 # ---------------------------------------------------------------------------

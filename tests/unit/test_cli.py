@@ -114,6 +114,77 @@ def test_tenants_remove(runner: CliRunner):
 
 
 # ---------------------------------------------------------------------------
+# tenants set-plan / usage — billing (Phase 8)
+# ---------------------------------------------------------------------------
+
+def test_tenants_set_plan_updates_tenant(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        result = runner.invoke(
+            cli,
+            ["--tenants", str(tenants_path), "tenants", "set-plan", "acme", "--plan", "pro"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "pro" in result.output.lower()
+        # Persisted
+        data = json.loads(tenants_path.read_text())
+        assert data["tenants"]["acme"]["plan"] == "pro"
+
+
+def test_tenants_set_plan_invalid_tenant(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        result = runner.invoke(
+            cli,
+            ["--tenants", str(tenants_path), "tenants", "set-plan", "ghost", "--plan", "pro"],
+        )
+        assert result.exit_code != 0
+
+
+def test_tenants_set_plan_invalid_plan(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        result = runner.invoke(
+            cli,
+            ["--tenants", str(tenants_path), "tenants", "set-plan", "acme", "--plan", "premium"],
+        )
+        assert result.exit_code != 0
+
+
+def test_tenants_usage_prints_summary(runner: CliRunner, monkeypatch):
+    with runner.isolated_filesystem() as fs:
+        fs_path = Path(fs)
+        tenants_path = fs_path / "tenants.json"
+        usage_path = fs_path / "usage.json"
+        # Tenant + pre-seeded usage
+        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        from agentforge.billing.usage import UsageStore
+        UsageStore(path=usage_path).record("acme", 42_000)
+        result = runner.invoke(
+            cli,
+            ["--tenants", str(tenants_path), "--usage", str(usage_path),
+             "tenants", "usage", "acme"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "acme" in result.output
+        assert "42,000" in result.output
+        assert "free" in result.output.lower()
+        assert "100,000" in result.output
+
+
+def test_tenants_usage_unknown_tenant(runner: CliRunner):
+    with runner.isolated_filesystem() as fs:
+        tenants_path = Path(fs) / "tenants.json"
+        result = runner.invoke(
+            cli,
+            ["--tenants", str(tenants_path), "tenants", "usage", "ghost"],
+        )
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
 # run — execute a workflow
 # ---------------------------------------------------------------------------
 
