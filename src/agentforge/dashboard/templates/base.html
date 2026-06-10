@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}agentforge{% endblock %}</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+  <script src="https://unpkg.com/htmx.org@1.9.10" defer></script>
+</head>
+<body>
+  {% if tenant_id %}
+  <header class="topbar">
+    <a href="/dashboard/" class="brand">agentforge</a>
+    <nav>
+      <a href="/dashboard/">Overview</a>
+      <a href="/dashboard/tenants">Tenants</a>
+      <a href="/dashboard/workflows">Workflows</a>
+    </nav>
+    <div class="user">
+      <span class="muted">{{ tenant_id }}</span>
+      <a href="/dashboard/logout" class="btn btn-small btn-secondary">Sign out</a>
+    </div>
+  </header>
+  {% endif %}
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Tenant {{ target_tenant }} — agentforge{% endblock %}
+{% block content %}
+  <h1>Tenant: {{ target_tenant }}</h1>
+  <p><a href="/dashboard/tenants">← All tenants</a></p>
+
+  {% if new_key %}
+    <div class="alert" style="background:var(--warning-bg);color:var(--warning)">
+      <strong>Save this API key — it won't be shown again.</strong>
+      <div style="margin-top:0.5rem">
+        <input type="text" value="{{ new_key }}" readonly
+               style="font-family:monospace;font-size:0.9rem;width:100%"
+               onclick="this.select()">
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Plan</h2>
+    <p>Current: {{ m.plan_badge(quota.plan.value) }}</p>
+    <form method="post" action="/dashboard/tenants/{{ target_tenant }}/plan">
+      <label for="plan">Change plan</label>
+      <select name="plan" id="plan">
+        <option value="free" {% if quota.plan.value == "free" %}selected{% endif %}>free (100k tokens/month)</option>
+        <option value="pro" {% if quota.plan.value == "pro" %}selected{% endif %}>pro (10M tokens/month)</option>
+        <option value="enterprise" {% if quota.plan.value == "enterprise" %}selected{% endif %}>enterprise (unlimited)</option>
+      </select>
+      <button type="submit" class="btn">Update</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Token usage</h2>
+    {{ m.quota_bar(quota.used, quota.limit, quota.warning, quota.exceeded) }}
+    <p class="muted">
+      {% if quota.limit %}
+        {{ "{:,}".format(quota.remaining) }} remaining · {{ "{:.1%}".format(quota.pct) }} used
+      {% else %}
+        Unlimited
+      {% endif %}
+    </p>
+  </div>
+{% endblock %}

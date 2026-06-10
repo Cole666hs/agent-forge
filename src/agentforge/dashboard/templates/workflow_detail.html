@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Workflow {{ name }} — agentforge{% endblock %}
+{% block content %}
+  <h1>Workflow: {{ name }}</h1>
+  <p><a href="/dashboard/workflows">← All workflows</a></p>
+
+  <div class="card">
+    <h2>Definition</h2>
+    <pre><code>{{ yaml_text }}</code></pre>
+  </div>
+
+  <div class="card">
+    <h2>Run</h2>
+    <form method="post" action="/v1/workflows/{{ name }}/run" target="_blank">
+      <label for="agent">Agent name</label>
+      <input type="text" name="agent" id="agent" value="{{ auth_tenant }}" required>
+      <p class="muted">Runs the workflow via the JSON API. Send the <code>X-API-Key</code> header from your client.</p>
+      <button type="submit" class="btn">Run via API</button>
+    </form>
+  </div>
+{% endblock %}

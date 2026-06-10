@@ -1,0 +1,21 @@
+{% macro quota_bar(used, limit, warning, exceeded) %}
+  {% set pct = 0 %}
+  {% set cls = "ok" %}
+  {% if limit %}
+    {% set pct = (used / limit * 100) if limit > 0 else 0 %}
+    {% if exceeded %}{% set cls = "exceeded" %}
+    {% elif warning %}{% set cls = "warning" %}
+    {% endif %}
+  {% endif %}
+  <div class="quota-bar quota-{{ cls }}">
+    <div class="fill" style="width: {{ pct if limit else 0 }}%"></div>
+    <span class="label">
+      {{ "{:,}".format(used) }} / {{ "{:,}".format(limit) if limit else "∞" }} tokens
+      {% if exceeded %}<strong>EXCEEDED</strong>{% elif warning %}<em>WARNING</em>{% endif %}
+    </span>
+  </div>
+{% endmacro %}
+
+{% macro plan_badge(plan) %}
+  <span class="badge badge-{{ plan }}">{{ plan }}</span>
+{% endmacro %}

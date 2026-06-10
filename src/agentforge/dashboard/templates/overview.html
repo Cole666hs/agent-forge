@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Overview — agentforge{% endblock %}
+{% block content %}
+  <h1>Overview</h1>
+  <div class="grid">
+    <div class="metric">
+      <div class="label">Tenant</div>
+      <div class="value">{{ tenant_id }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Plan</div>
+      <div class="value">{{ m.plan_badge(quota.plan.value) }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Workflows</div>
+      <div class="value">{{ workflow_count }}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Token usage this month</h2>
+    {{ m.quota_bar(quota.used, quota.limit, quota.warning, quota.exceeded) }}
+    {% if quota.limit %}
+      <p class="muted">{{ "{:,}".format(quota.remaining) }} tokens remaining · {{ "{:.1%}".format(quota.pct) }} of {{ "{:,}".format(quota.limit) }} used</p>
+    {% else %}
+      <p class="muted">Unlimited plan — no quota.</p>
+    {% endif %}
+  </div>
+
+  {% if recent_workflows %}
+  <div class="card">
+    <h2>Recent workflows</h2>
+    <table>
+      <thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>
+        {% for wf in recent_workflows %}
+          <tr>
+            <td>{{ wf.name }}</td>
+            <td><a href="/dashboard/workflows/{{ wf.name }}" class="btn btn-small btn-secondary">View</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+{% endblock %}

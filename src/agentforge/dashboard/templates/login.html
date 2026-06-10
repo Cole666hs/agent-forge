@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>agentforge — login</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>agentforge</h1>
+    <p class="muted">Paste your API key to sign in.</p>
+    {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/dashboard/login">
+      <label for="api_key">API key</label>
+      <input type="password" name="api_key" id="api_key" autofocus required>
+      <button type="submit" class="btn">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

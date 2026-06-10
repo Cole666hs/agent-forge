@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Tenants — agentforge{% endblock %}
+{% block content %}
+  <h1>Tenants</h1>
+
+  <div class="card">
+    <h2>Create tenant</h2>
+    <form method="post" action="/dashboard/tenants">
+      <label for="tenant_id">Tenant ID</label>
+      <input type="text" name="tenant_id" id="tenant_id" pattern="[a-zA-Z0-9_-]+" required>
+      <button type="submit" class="btn">Create</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>All tenants</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Tenant</th>
+          <th>Plan</th>
+          <th>Usage</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><a href="/dashboard/tenants/{{ row.tenant_id }}">{{ row.tenant_id }}</a></td>
+          <td>{{ m.plan_badge(row.plan) }}</td>
+          <td>
+            {% if row.limit %}
+              {{ "{:,}".format(row.used) }} / {{ "{:,}".format(row.limit) }}
+              {% if row.exceeded %}<span class="badge" style="background:var(--error-bg);color:var(--error)">EXCEEDED</span>
+              {% elif row.warning %}<span class="badge" style="background:var(--warning-bg);color:var(--warning)">WARN</span>
+              {% endif %}
+            {% else %}
+              {{ "{:,}".format(row.used) }} / ∞
+            {% endif %}
+          </td>
+          <td>
+            <a href="/dashboard/tenants/{{ row.tenant_id }}" class="btn btn-small btn-secondary">View</a>
+            <form method="post" action="/dashboard/tenants/{{ row.tenant_id }}/delete" style="display:inline"
+                  onsubmit="return confirm('Delete tenant {{ row.tenant_id }}? This cannot be undone.')">
+              <button type="submit" class="btn btn-small btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

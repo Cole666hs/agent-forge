@@ -36,6 +36,8 @@ from agentforge.billing.usage import UsageStore
 from agentforge.billing.quota import quota_status, enforce_quota, QuotaExceededError
 from agentforge.core.mailbox import FileMailbox
 from agentforge.core.message import Message
+from agentforge.dashboard import router as dashboard_router
+from agentforge.dashboard.router import get_templates
 from agentforge.observability.instrumentation import instrument_mailbox
 from agentforge.observability.metrics import get_registry
 from agentforge.observability.middleware import RequestIdMiddleware
@@ -283,6 +285,24 @@ def create_app(
     # the X-Request-Id header on the response before the FastAPI router
     # processes anything.
     app.add_middleware(RequestIdMiddleware)
+
+    # -- dashboard wiring --------------------------------------------------
+    # State that the dashboard router needs (templates, registry, paths).
+    # Mounted BEFORE we add the router so the router's dependency lookups
+    # resolve.
+    app.state.tenants = registry
+    app.state.templates = get_templates()
+    app.state.usage_path = mailbox_root.parent / "usage.json"
+    app.state.workflows_dir = workflows_dir
+
+    # Mount the static files directory for the dashboard CSS.
+    from fastapi.staticfiles import StaticFiles
+    _dashboard_static = Path(__file__).parent / "dashboard" / "static"
+    app.mount("/dashboard/static", StaticFiles(directory=str(_dashboard_static)),
+              name="dashboard-static")
+
+    # Include the dashboard HTML routes.
+    app.include_router(dashboard_router)
 
     return app
 

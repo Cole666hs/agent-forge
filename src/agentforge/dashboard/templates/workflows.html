@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Workflows — agentforge{% endblock %}
+{% block content %}
+  <h1>Workflows</h1>
+  <div class="card">
+    {% if workflows %}
+      <table>
+        <thead><tr><th>Name</th><th></th></tr></thead>
+        <tbody>
+          {% for wf in workflows %}
+            <tr>
+              <td><a href="/dashboard/workflows/{{ wf.name }}">{{ wf.name }}</a></td>
+              <td><a href="/dashboard/workflows/{{ wf.name }}" class="btn btn-small btn-secondary">View</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No workflows found.</p>
+    {% endif %}
+  </div>
+{% endblock %}
