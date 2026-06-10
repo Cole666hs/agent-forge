@@ -207,6 +207,24 @@ my_counter.inc()
 print(registry.render())
 ```
 
+## Dashboard
+
+Self-hosted web UI for managing tenants, workflows, and usage. FastAPI + Jinja2 + HTMX. No JavaScript framework, no SPA, no build step. Open <http://localhost:8765/dashboard/> after starting `agentforge serve`.
+
+**Login:** paste an API key (the one shown by `agentforge tenants add <id>`). The server sets a `HttpOnly` cookie for the session; the API key never leaves the server except in the request header.
+
+**Pages:**
+
+- **Overview** (`/dashboard/`) — tenant ID, plan badge, quota bar (color-coded: green / yellow at 80%+ / red at 100%+), workflow count
+- **Tenants** (`/dashboard/tenants`) — list with plan + usage; create new tenant; delete (with confirm)
+- **Tenant detail** (`/dashboard/tenants/{id}`) — full quota detail + plan switcher (free / pro / enterprise) + one-time API key display on creation
+- **Workflows** (`/dashboard/workflows`) — list of `.yaml` files in the workflows dir
+- **Workflow detail** (`/dashboard/workflows/{name}`) — raw YAML view + "Run via API" form
+
+**Tech:** Jinja2 templates render server-side; HTMX is loaded from a CDN for the few interactions (mostly just `<form>` posts — the dashboard is functional even with JS disabled). CSS is self-contained (`src/agentforge/dashboard/static/dashboard.css`), no Tailwind, no preprocessor.
+
+**Self-hosted scope (v0.5.0):** no real-time updates (refresh the page to see new data), no charts (CSS bars only), no dark mode, no mobile-first responsive (works on desktop, degrades gracefully), no 2FA / SSO (the API key is the only credential). These are out of scope for the self-hosted edition.
+
 ## Billing & quota
 
 Per-tenant monthly token quota. Three plan tiers; soft warning at 80% usage; hard block at 100% (raises `QuotaExceededError` from the LLM adapter).
@@ -260,10 +278,10 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-Web dashboard (FastAPI + HTMX) · OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier.
+OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · Real-time dashboard updates (WebSockets) · Dark mode · Mobile-first responsive UI.
 
 These were identified by both the HAMILLER and NEMESIS cross-review.
-Each is a multi-day project; not in this MVP cut. Phase 7 (Observability) and Phase 8 (Billing/Quota) shipped the structured-logging + metrics + health-check + quota foundation; the roadmap items above build on it.
+Each is a multi-day project; not in this MVP cut. Phase 7 (Observability), Phase 8 (Billing/Quota), and Phase 9 (Web Dashboard) shipped the structured-logging + metrics + health-check + quota + UI foundation; the roadmap items above build on it.
 
 ## License
 
