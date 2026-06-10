@@ -16,24 +16,17 @@ from agentforge.adapters import (
     make_provider,
 )
 from agentforge.core import VALID_INTENTS, FileMailbox, Mailbox, Message
+from agentforge.workflows import State, Step, Workflow, WorkflowError, register_step_type
 
 __version__ = "0.1.0"
 __all__ = [
     # Core
-    "FileMailbox",
-    "Mailbox",
-    "Message",
-    "VALID_INTENTS",
+    "FileMailbox", "Mailbox", "Message", "VALID_INTENTS",
     # Adapters
-    "BaseChannelAdapter",
-    "BaseLLMAdapter",
-    "BaseOpenAICompatLLMAdapter",
-    "OpenRouterAdapter",
-    "MiniMaxAdapter",
-    "OllamaAdapter",
-    "make_provider",
-    "ChatResult",
-    "LLMError",
-    "WebhookChannelAdapter",
-    "WebhookError",
+    "BaseChannelAdapter", "BaseLLMAdapter",
+    "BaseOpenAICompatLLMAdapter", "OpenRouterAdapter", "MiniMaxAdapter",
+    "OllamaAdapter", "make_provider", "ChatResult", "LLMError",
+    "WebhookChannelAdapter", "WebhookError",
+    # Workflows
+    "State", "Step", "Workflow", "WorkflowError", "register_step_type",
 ]
