@@ -94,9 +94,7 @@ class State:
 
     def persist(self, db_path: Path) -> None:
         """Save state to SQLite. Overwrites any prior state for this run_id."""
-        db_path = Path(db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(db_path)) as conn:
+        with _open_state_db(db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS workflow_state (
                     run_id TEXT NOT NULL,
@@ -118,7 +116,7 @@ class State:
         self._data = {}
         if not Path(db_path).exists():
             return
-        with sqlite3.connect(str(db_path)) as conn:
+        with _open_state_db(db_path) as conn:
             for key, value in conn.execute(
                 "SELECT key, value FROM workflow_state WHERE run_id = ?",
                 (self.run_id,),
@@ -147,6 +145,29 @@ def _set_path(d: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
         cur = cur.setdefault(k, {})
     cur[keys[-1]] = value
     return d
+
+
+# SQLite default locking is "database is locked" on concurrent writers.
+# WAL mode allows concurrent readers + one writer without blocking,
+# and the timeout makes writers wait briefly instead of erroring.
+# This is the same fix recommended by HAMILLER + NEMESIS reviews.
+_DB_TIMEOUT_SECONDS = 5.0
+
+
+def _open_state_db(db_path: Path) -> sqlite3.Connection:
+    """Open the state DB with WAL mode + busy timeout.
+
+    WAL: concurrent readers don't block a writer. Use `PRAGMA journal_mode=WAL`
+    on every connection (it's a per-connection setting, not persisted).
+    Timeout: `sqlite3.connect(timeout=...)` makes concurrent writers wait
+    up to that many seconds before raising "database is locked".
+    """
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=_DB_TIMEOUT_SECONDS)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")  # WAL + NORMAL is the standard combo
+    return conn
 
 
 # ---------------------------------------------------------------------------

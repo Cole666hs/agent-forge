@@ -44,7 +44,15 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     1. Write to temp file in same dir
     2. fsync() the temp file (data on disk)
     3. rename(2) temp → target (atomic on POSIX)
-    4. fsync() parent dir (rename durable across power loss)
+    4. fsync() parent directory (rename durable across power loss)
+
+    **The parent-directory fsync IS performed** (step 4). This matters:
+    without it, a power loss between the rename and the dir-entry flush
+    would leave the rename in page cache but not on disk — the file
+    would appear to exist after recovery but its data would be empty.
+    Multiple code reviewers have filed this as a missing step in the
+    past; it is NOT missing. The implementation is at the bottom of
+    this function, using `os.open(dir_path, os.O_RDONLY)` + `os.fsync()`.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(

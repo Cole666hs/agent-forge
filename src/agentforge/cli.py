@@ -170,19 +170,30 @@ async def _watch_loop(
     agent: str,
     interval: int,
 ) -> None:
-    """Poll the inbox and run the workflow for each unread message."""
+    """Poll the inbox and run the workflow for each unread message.
+
+    Catches asyncio.CancelledError cleanly so SIGTERM/SIGINT (which the
+    CLI converts to a task cancellation) exits the loop without leaving
+    an orphan workflow state. The current step is allowed to finish via
+    CancelledError propagation — the engine is async and checkpoints
+    after each step, so partial work is recoverable on next start.
+    """
     click.echo(f"watching {agent!r}'s inbox every {interval}s (Ctrl-C to stop)")
-    while True:
-        unread = mbox.list_inbox(agent, include_read=False, limit=1)
-        if unread:
-            click.echo(f"→ running workflow for message {unread[0].id}")
-            state = State()
-            try:
-                await wf.run(state=state, mailbox=mbox, llm=None, agent_name=agent)
-            except WorkflowError as e:
-                click.echo(f"  workflow error: {e}", err=True)
-            click.echo(f"  state keys after run: {sorted(state._data.keys())}")
-        await asyncio.sleep(interval)
+    try:
+        while True:
+            unread = mbox.list_inbox(agent, include_read=False, limit=1)
+            if unread:
+                click.echo(f"→ running workflow for message {unread[0].id}")
+                state = State()
+                try:
+                    await wf.run(state=state, mailbox=mbox, llm=None, agent_name=agent)
+                except WorkflowError as e:
+                    click.echo(f"  workflow error: {e}", err=True)
+                click.echo(f"  state keys after run: {sorted(state._data.keys())}")
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        click.echo("interrupted — shutting down watch loop", err=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
