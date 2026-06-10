@@ -10,6 +10,7 @@ from agentforge.adapters.llm import (
     make_provider,
 )
 from agentforge.adapters.llm_compat import ChatResult
+from agentforge.adapters.webhook import WebhookChannelAdapter, WebhookError
 
 __all__ = [
     # ABCs
@@ -23,4 +24,7 @@ __all__ = [
     "make_provider",
     "ChatResult",
     "LLMError",
+    # Channel concrete adapters
+    "WebhookChannelAdapter",
+    "WebhookError",
 ]

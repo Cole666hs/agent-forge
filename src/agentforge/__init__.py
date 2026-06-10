@@ -11,6 +11,8 @@ from agentforge.adapters import (
     MiniMaxAdapter,
     OllamaAdapter,
     OpenRouterAdapter,
+    WebhookChannelAdapter,
+    WebhookError,
     make_provider,
 )
 from agentforge.core import VALID_INTENTS, FileMailbox, Mailbox, Message
@@ -32,4 +34,6 @@ __all__ = [
     "make_provider",
     "ChatResult",
     "LLMError",
+    "WebhookChannelAdapter",
+    "WebhookError",
 ]
