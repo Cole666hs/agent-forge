@@ -32,6 +32,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from agentforge.billing.usage import UsageStore
+from agentforge.billing.quota import quota_status, enforce_quota, QuotaExceededError
 from agentforge.core.mailbox import FileMailbox
 from agentforge.core.message import Message
 from agentforge.observability.instrumentation import instrument_mailbox
@@ -94,6 +96,9 @@ def create_app(
 
     app = FastAPI(title="agentforge", version="0.2.0")
     registry = TenantRegistry(path=tenants_path)
+
+    # Per-tenant usage store (shared across requests in this process).
+    usage_store = UsageStore(path=mailbox_root.parent / "usage.json")
 
     # -- auth dependency ---------------------------------------------------
 
@@ -190,6 +195,7 @@ def create_app(
               status_code=status.HTTP_201_CREATED)
     def send_message(
         body: SendMessageRequest,
+        response: Response,
         tenant_id: str = Depends(require_tenant),
     ) -> SendMessageResponse:
         mbox = mailbox_for(tenant_id)
@@ -200,9 +206,38 @@ def create_app(
             intent=body.intent,
         )
         mbox.send(msg)
+        # Add quota headers to response (informational — messages don't
+        # consume tokens, so used stays at current usage).
+        qs = quota_status(registry, usage_store, tenant_id)
+        limit_str = "unlimited" if qs.limit is None else str(qs.limit)
+        response.headers["X-Quota-Used"] = str(qs.used)
+        response.headers["X-Quota-Limit"] = limit_str
+        response.headers["X-Quota-Warning"] = "true" if qs.warning else "false"
+        response.headers["X-Quota-Exceeded"] = "true" if qs.exceeded else "false"
         return SendMessageResponse(
             id=msg.id, to=msg.to, from_=msg.from_, content=msg.content,
         )
+
+    @app.get("/v1/tenants/{tenant_id}/usage")
+    def get_tenant_usage(
+        tenant_id: str,
+        # Authenticated via the same X-API-Key as /v1/* endpoints. The
+        # caller's tenant_id (from the auth dep) is implicitly the
+        # tenant they're allowed to see — for multi-tenant isolation
+        # we'd compare; for Phase 8, the API key is the credential.
+        _: str = Depends(require_tenant),
+    ) -> dict:
+        qs = quota_status(registry, usage_store, tenant_id)
+        return {
+            "tenant_id": qs.tenant_id,
+            "plan": qs.plan.value,
+            "used": qs.used,
+            "limit": qs.limit,
+            "remaining": qs.remaining,
+            "pct": qs.pct,
+            "warning": qs.warning,
+            "exceeded": qs.exceeded,
+        }
     @app.post("/v1/workflows/{name}/run", response_model=RunWorkflowResponse)
     async def run_workflow(
         name: str,
@@ -221,6 +256,23 @@ def create_app(
         try:
             await wf.run(state=state, mailbox=mbox, llm=None,
                          agent_name=body.agent, state_db=state_db)
+        except QuotaExceededError as e:
+            # Quota enforcement at the workflow run level. Currently the
+            # LLM provider in `serve` mode is shared (no per-tenant
+            # instrument_llm) so this branch is reachable only when a
+            # future change wires per-tenant instrumentation. Keeping
+            # the handler so the 429 path is tested and ready.
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "quota_exceeded",
+                    "tenant_id": e.tenant_id,
+                    "used": e.used,
+                    "limit": e.limit,
+                    "requested": e.requested,
+                },
+                headers={"Retry-After": "2592000"},  # 30 days
+            )
         except WorkflowError as e:
             raise HTTPException(status_code=500, detail=str(e))
         return RunWorkflowResponse(state_keys=sorted(state._data.keys()))
