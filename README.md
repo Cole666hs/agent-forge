@@ -207,12 +207,63 @@ my_counter.inc()
 print(registry.render())
 ```
 
+## Billing & quota
+
+Per-tenant monthly token quota. Three plan tiers; soft warning at 80% usage; hard block at 100% (raises `QuotaExceededError` from the LLM adapter).
+
+| Plan        | Monthly tokens | Use case                          |
+|-------------|---------------:|-----------------------------------|
+| `free`      |        100,000 | local dev, small experiments      |
+| `pro`       |     10,000,000 | production agents                 |
+| `enterprise`|         unlimited | paying customers, custom SLAs   |
+
+**Limits are calendar-month based (UTC).** The counter resets on the 1st of each month; rolled-over entries are detected lazily on read.
+
+**Set a plan** (CLI):
+
+```bash
+agentforge tenants set-plan acme --plan pro
+```
+
+**Check usage** (CLI):
+
+```bash
+agentforge tenants usage acme
+# tenant:    acme
+# plan:      pro
+# used:      42,000 tokens
+# limit:     10,000,000 tokens
+# remaining: 9,958,000 tokens
+# percent:   0.4%
+```
+
+**Check usage** (API, requires `X-API-Key`):
+
+```bash
+curl -H "X-API-Key: $KEY" http://localhost:8765/v1/tenants/acme/usage
+# {"tenant_id":"acme","plan":"pro","used":42000,"limit":10000000,
+#  "remaining":9958000,"pct":0.0042,"warning":false,"exceeded":false}
+```
+
+**HTTP responses** to `POST /v1/messages` include informational quota headers:
+
+```
+X-Quota-Used: 0
+X-Quota-Limit: 100000
+X-Quota-Warning: false
+X-Quota-Exceeded: false
+```
+
+**Wiring in the CLI**: when you run a workflow with `--tenant <id>`, the LLM provider is instrumented with `enforce_quota()`. The first call that would push the tenant over their limit raises `QuotaExceededError`, which the CLI surfaces as a clean error.
+
+**Self-hosted tier scope (v0.4.0)**: no payment provider, no email notifications, no per-tenant custom limits, no usage history beyond the current month. These are out of scope for the self-hosted edition — the cloud tier is a separate plan.
+
 ## Roadmap (next milestones)
 
-Billing/Quota (per-tenant LLM token metering) · Web dashboard (FastAPI + HTMX) · OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics.
+Web dashboard (FastAPI + HTMX) · OpenTelemetry SDK / OTLP export · Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier.
 
 These were identified by both the HAMILLER and NEMESIS cross-review.
-Each is a multi-day project; not in this MVP cut. Phase 7 (Observability) shipped the structured-logging + metrics + health-check foundation; the roadmap items above build on it.
+Each is a multi-day project; not in this MVP cut. Phase 7 (Observability) and Phase 8 (Billing/Quota) shipped the structured-logging + metrics + health-check + quota foundation; the roadmap items above build on it.
 
 ## License
 
