@@ -18,14 +18,12 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card"
+       hx-get="/dashboard/partials/usage"
+       hx-trigger="every 5s"
+       hx-swap="innerHTML">
     <h2>Token usage this month</h2>
-    {{ m.quota_bar(quota.used, quota.limit, quota.warning, quota.exceeded) }}
-    {% if quota.limit %}
-      <p class="muted">{{ "{:,}".format(quota.remaining) }} tokens remaining · {{ "{:.1%}".format(quota.pct) }} of {{ "{:,}".format(quota.limit) }} used</p>
-    {% else %}
-      <p class="muted">Unlimited plan — no quota.</p>
-    {% endif %}
+    {% include "_partial_usage.html" %}
   </div>
 
   {% if recent_workflows %}

@@ -1,0 +1,15 @@
+{# Quota card body — polled by overview.html via HTMX. Returns the bar
+   and the status line as a fragment (no <html>/<body>). HTMX swaps this
+   into the element marked with hx-get on the overview page. #}
+<div class="quota-bar {% if quota.exceeded %}quota-exceeded{% elif quota.warning %}quota-warning{% endif %}">
+  <div class="fill" style="width: {% if quota.limit %}{{ (quota.used / quota.limit * 100) if quota.limit > 0 else 0 }}{% else %}0{% endif %}%"></div>
+  <span class="label">
+    {{ "{:,}".format(quota.used) }} / {{ "{:,}".format(quota.limit) if quota.limit else "∞" }} tokens
+    {% if quota.exceeded %}<strong>EXCEEDED</strong>{% elif quota.warning %}<em>WARNING</em>{% endif %}
+  </span>
+</div>
+{% if quota.limit %}
+  <p class="muted">{{ "{:,}".format(quota.remaining) }} tokens remaining · {{ "{:.1%}".format(quota.pct) }} of {{ "{:,}".format(quota.limit) }} used</p>
+{% else %}
+  <p class="muted">Unlimited plan — no quota.</p>
+{% endif %}

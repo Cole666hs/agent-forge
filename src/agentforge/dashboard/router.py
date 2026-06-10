@@ -200,3 +200,53 @@ def workflow_detail(request: Request, name: str) -> Response:
         request=request, auth_tenant=auth_tenant,
         name=name, yaml_text=yaml_text,
     )
+
+
+# ---------------------------------------------------------------------------
+# HTMX partials — return HTML fragments for polling
+# ---------------------------------------------------------------------------
+# HTMX `hx-get` + `hx-trigger="every Ns"` re-fetches these endpoints and
+# swaps their returned HTML into the trigger element. We return fragments,
+# not full pages — no <html>/<body> wrapper. This keeps polling cheap
+# (small payloads, no layout re-render).
+
+@router.get("/partials/usage", response_class=HTMLResponse)
+def partial_usage(request: Request) -> Response:
+    """Render the quota-card body (bar + status line) for the current tenant.
+
+    Used by `overview.html` via HTMX polling. The card on the overview page
+    is tagged with `hx-get="/dashboard/partials/usage" hx-trigger="every 5s"`
+    so this endpoint fires every 5 seconds and the bar updates in place.
+    """
+    tenant_id = tenant_from_cookie_or_401(request)
+    usage = UsageStore(path=request.app.state.usage_path)
+    qs = quota_status(request.app.state.tenants, usage, tenant_id)
+    templates = request.app.state.templates
+    return templates.get_template("_partial_usage.html").render(
+        request=request, quota=qs,
+    )
+
+
+@router.get("/partials/tenants", response_class=HTMLResponse)
+def partial_tenants(request: Request) -> Response:
+    """Render the table-row body of the tenants list (no <table> wrapper).
+
+    Used by `tenants.html` via HTMX polling on the <tbody>. Fires every
+    5 seconds; the whole row set is re-rendered, so plan/usage changes
+    appear without a page refresh.
+    """
+    tenant_from_cookie_or_401(request)  # 401 if not signed in
+    registry = request.app.state.tenants
+    usage = UsageStore(path=request.app.state.usage_path)
+    rows = []
+    for tid in registry.list_tenants():
+        qs = quota_status(registry, usage, tid)
+        rows.append({
+            "tenant_id": tid, "plan": qs.plan.value,
+            "used": qs.used, "limit": qs.limit,
+            "warning": qs.warning, "exceeded": qs.exceeded,
+        })
+    templates = request.app.state.templates
+    return templates.get_template("_partial_tenants_rows.html").render(
+        request=request, rows=rows,
+    )

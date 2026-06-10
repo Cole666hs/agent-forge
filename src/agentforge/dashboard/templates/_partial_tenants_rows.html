@@ -1,0 +1,27 @@
+{# Tenants table rows — polled by tenants.html via HTMX. Returns only
+   <tr>...</tr> rows (no <table> wrapper). HTMX swaps this into the
+   <tbody> tagged with hx-get on the tenants page. #}
+{% import "_macros.html" as m %}
+{% for row in rows %}
+<tr>
+  <td><a href="/dashboard/tenants/{{ row.tenant_id }}">{{ row.tenant_id }}</a></td>
+  <td>{{ m.plan_badge(row.plan) }}</td>
+  <td>
+    {% if row.limit %}
+      {{ "{:,}".format(row.used) }} / {{ "{:,}".format(row.limit) }}
+      {% if row.exceeded %}<span class="badge" style="background:var(--error-bg);color:var(--error)">EXCEEDED</span>
+      {% elif row.warning %}<span class="badge" style="background:var(--warning-bg);color:var(--warning)">WARN</span>
+      {% endif %}
+    {% else %}
+      {{ "{:,}".format(row.used) }} / ∞
+    {% endif %}
+  </td>
+  <td>
+    <a href="/dashboard/tenants/{{ row.tenant_id }}" class="btn btn-small btn-secondary">View</a>
+    <form method="post" action="/dashboard/tenants/{{ row.tenant_id }}/delete" style="display:inline"
+          onsubmit="return confirm('Delete tenant {{ row.tenant_id }}? This cannot be undone.')">
+      <button type="submit" class="btn btn-small btn-danger">Delete</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}

@@ -24,7 +24,9 @@
           <th></th>
         </tr>
       </thead>
-      <tbody>
+      <tbody hx-get="/dashboard/partials/tenants"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
         {% for row in rows %}
         <tr>
           <td><a href="/dashboard/tenants/{{ row.tenant_id }}">{{ row.tenant_id }}</a></td>
