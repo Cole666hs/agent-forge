@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{% if is_new %}New workflow{% else %}Edit {{ name }}{% endif %} — agentforge{% endblock %}
+{% block content %}
+  <h1>{% if is_new %}New workflow{% else %}Edit: {{ name }}{% endif %}</h1>
+  <p><a href="/dashboard/workflows">← All workflows</a></p>
+
+  {% if error %}
+    <div class="alert alert-error">
+      <strong>Save failed:</strong> {{ error }}
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <form method="post" action="/dashboard/workflows/{{ name }}">
+      <label for="name">Name</label>
+      <input type="text" name="name" id="name" value="{{ name }}" readonly>
+
+      <label for="yaml_content">YAML</label>
+      <textarea name="yaml_content" id="yaml_content" rows="20" style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.85rem; tab-size: 2;">{{ yaml_text }}</textarea>
+
+      <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+        <button type="submit" class="btn">Save</button>
+        <a href="/dashboard/workflows" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Schema hints</h2>
+    <p class="muted">Top-level keys: <code>name</code> (required), <code>description</code>, <code>steps</code> (list).</p>
+    <p class="muted">Step types: <code>receive</code>, <code>respond</code>, <code>llm_call</code>, <code>branch</code>, <code>loop</code>, <code>wait</code>, <code>noop</code>.</p>
+    <p class="muted">Save with invalid YAML and the file is rejected — no half-written state.</p>
+  </div>
+{% endblock %}

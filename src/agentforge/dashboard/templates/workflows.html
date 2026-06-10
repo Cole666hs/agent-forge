@@ -2,6 +2,11 @@
 {% block title %}Workflows — agentforge{% endblock %}
 {% block content %}
   <h1>Workflows</h1>
+
+  <div class="card">
+    <a href="/dashboard/workflows/new" class="btn">+ New workflow</a>
+  </div>
+
   <div class="card">
     {% if workflows %}
       <table>
@@ -10,13 +15,20 @@
           {% for wf in workflows %}
             <tr>
               <td><a href="/dashboard/workflows/{{ wf.name }}">{{ wf.name }}</a></td>
-              <td><a href="/dashboard/workflows/{{ wf.name }}" class="btn btn-small btn-secondary">View</a></td>
+              <td>
+                <a href="/dashboard/workflows/{{ wf.name }}" class="btn btn-small btn-secondary">View</a>
+                <a href="/dashboard/workflows/{{ wf.name }}/edit" class="btn btn-small">Edit</a>
+                <form method="post" action="/dashboard/workflows/{{ wf.name }}/delete" style="display:inline"
+                      onsubmit="return confirm('Delete workflow {{ wf.name }}? This cannot be undone.')">
+                  <button type="submit" class="btn btn-small btn-danger">Delete</button>
+                </form>
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     {% else %}
-      <p class="muted">No workflows found.</p>
+      <p class="muted">No workflows found. <a href="/dashboard/workflows/new">Create the first one →</a></p>
     {% endif %}
   </div>
 {% endblock %}

@@ -188,6 +188,100 @@ def workflows_list(request: Request) -> Response:
     )
 
 
+@router.get("/workflows/new", response_class=HTMLResponse)
+def workflow_new_get(request: Request) -> Response:
+    """Form for a new workflow: name + empty YAML content.
+
+    NOTE: This route MUST be registered BEFORE `/workflows/{name}` so
+    FastAPI's pattern matcher doesn't bind `name="new"` to the dynamic
+    segment and try to read workflows_dir/new.yaml (which doesn't exist).
+    """
+    tenant_from_cookie_or_401(request)
+    templates = request.app.state.templates
+    starter = (
+        "name: my_workflow\n"
+        "description: A short description.\n"
+        "steps:\n"
+        "  - id: receive\n"
+        "    type: receive\n"
+        "  - id: respond\n"
+        "    type: respond\n"
+        "    inputs:\n"
+        "      to: user\n"
+        "      content: \"got: {{ receive.content }}\"\n"
+    )
+    return templates.get_template("workflow_edit.html").render(
+        request=request, name="", yaml_text=starter, error=None, is_new=True,
+    )
+
+
+def _validate_yaml(yaml_text: str) -> tuple[bool, str]:
+    """Parse YAML. Return (ok, error_message). Empty content is invalid."""
+    if not yaml_text or not yaml_text.strip():
+        return False, "YAML content is empty"
+    try:
+        import yaml
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        return False, f"invalid YAML: {e}"
+    if not isinstance(parsed, dict):
+        return False, "YAML must be a mapping (key: value) at the top level"
+    if "name" not in parsed:
+        return False, "YAML must contain a top-level 'name' key"
+    return True, ""
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically (tempfile + os.replace)."""
+    import os
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+@router.post("/workflows/{name}")
+def workflow_save(
+    request: Request,
+    name: str,
+    yaml_content: str = Form(""),
+) -> Response:
+    """Validate + save (create or overwrite). yaml_content default empty
+    so the empty-string test path returns our 400, not FastAPI's 422."""
+    tenant_from_cookie_or_401(request)
+    wf_dir = request.app.state.workflows_dir
+    if "/" in name or ".." in name or not name:
+        raise HTTPException(status_code=400, detail="invalid workflow name")
+    ok, err = _validate_yaml(yaml_content)
+    if not ok:
+        templates = request.app.state.templates
+        html = templates.get_template("workflow_edit.html").render(
+            request=request, name=name, yaml_text=yaml_content,
+            error=err, is_new=not (wf_dir / f"{name}.yaml").exists(),
+        )
+        return HTMLResponse(content=html, status_code=400)
+    _atomic_write(wf_dir / f"{name}.yaml", yaml_content)
+    return RedirectResponse(
+        url=f"/dashboard/workflows/{name}",
+        status_code=303,
+    )
+
+
 @router.get("/workflows/{name}", response_class=HTMLResponse)
 def workflow_detail(request: Request, name: str) -> Response:
     auth_tenant = tenant_from_cookie_or_401(request)
@@ -199,6 +293,33 @@ def workflow_detail(request: Request, name: str) -> Response:
     return templates.get_template("workflow_detail.html").render(
         request=request, auth_tenant=auth_tenant,
         name=name, yaml_text=yaml_text,
+    )
+
+
+@router.get("/workflows/{name}/edit", response_class=HTMLResponse)
+def workflow_edit_get(request: Request, name: str) -> Response:
+    """Edit form pre-filled with the current YAML."""
+    tenant_from_cookie_or_401(request)
+    wf_path = request.app.state.workflows_dir / f"{name}.yaml"
+    if not wf_path.exists():
+        raise HTTPException(status_code=404, detail=f"workflow {name!r} not found")
+    yaml_text = wf_path.read_text(encoding="utf-8")
+    templates = request.app.state.templates
+    return templates.get_template("workflow_edit.html").render(
+        request=request, name=name, yaml_text=yaml_text,
+        error=None, is_new=False,
+    )
+
+
+@router.post("/workflows/{name}/delete")
+def workflow_delete(request: Request, name: str) -> Response:
+    """Remove the .yaml file. Safe if it doesn't exist."""
+    tenant_from_cookie_or_401(request)
+    wf_path = request.app.state.workflows_dir / f"{name}.yaml"
+    if wf_path.exists():
+        wf_path.unlink()
+    return RedirectResponse(
+        url="/dashboard/workflows", status_code=303,
     )
 
 
