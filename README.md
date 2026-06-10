@@ -18,7 +18,7 @@
 - **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `status`
 - **Hardened systemd unit** (`contrib/systemd/agentforge@.service`) — one daemon per agent
 
-**121 tests grün** across 11 commits. Library import is side-effect-free.
+**124 tests grün** across 12 commits. Library import is side-effect-free.
 
 ## Quick start
 
@@ -40,6 +40,11 @@ $EDITOR .env
 
 # Run a workflow (one-shot)
 agentforge run workflow.yaml --agent mybot
+
+# LLM provider is auto-detected from env (OPENROUTER_API_KEY / MINIMAX_API_KEY
+# win, ollama serve is the fallback). Force a specific provider with --llm:
+agentforge run workflow.yaml --agent mybot --llm openrouter
+agentforge run workflow.yaml --agent mybot --llm ollama
 
 # Or run continuously (poll inbox every 5s, systemd-friendly)
 agentforge run workflow.yaml --agent mybot --watch
