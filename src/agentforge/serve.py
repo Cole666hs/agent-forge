@@ -1,7 +1,9 @@
 """agentforge.serve — FastAPI HTTP server with API-key auth.
 
 Endpoints:
-  GET  /health                       — no auth, returns 200
+  GET  /health                       — no auth, returns 200 (liveness)
+  GET  /readyz                       — no auth, returns 200/503 (readiness)
+  GET  /metrics                      — no auth, Prometheus text format
   GET  /v1/inbox?agent=NAME          — auth, list mailbox inbox
   POST /v1/messages                  — auth, send message
   POST /v1/workflows/{name}/run      — auth, run workflow
@@ -9,10 +11,17 @@ Endpoints:
 Auth: `X-API-Key: <key>` header. The server consults a TenantRegistry
 to map keys → tenant_id. All mailbox + state operations are scoped to
 that tenant.
+
+Observability:
+  - Each request gets an X-Request-Id (inbound or generated), echoed on
+    the response and stored in the request_id contextvar for log lines.
+  - Per-tenant mailboxes are instrumented (counter + duration) on first
+    use and cached. Metrics accumulate until process restart.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -20,11 +29,14 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.testclient import TestClient
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from agentforge.core.mailbox import FileMailbox
 from agentforge.core.message import Message
+from agentforge.observability.instrumentation import instrument_mailbox
+from agentforge.observability.metrics import get_registry
+from agentforge.observability.middleware import RequestIdMiddleware
 from agentforge.tenants.registry import TenantRegistry
 from agentforge.workflows.engine import State, Workflow, WorkflowError
 
@@ -101,14 +113,67 @@ def create_app(
             )
         return tenant_id
 
+    # Per-tenant mailbox cache. Each tenant gets its own FileMailbox, and
+    # the first call to mailbox_for() also instruments it for metrics.
+    _mailbox_cache: dict[str, FileMailbox] = {}
+
     def mailbox_for(tenant_id: str) -> FileMailbox:
-        return FileMailbox(root=mailbox_root, tenant_id=tenant_id)
+        if tenant_id not in _mailbox_cache:
+            m = FileMailbox(root=mailbox_root, tenant_id=tenant_id)
+            instrument_mailbox(m, registry=get_registry())
+            _mailbox_cache[tenant_id] = m
+        return _mailbox_cache[tenant_id]
 
     # -- routes ------------------------------------------------------------
+
+    # RequestIdMiddleware is added via app.add_middleware below (after
+    # all routes are registered) so the middleware wraps the whole stack.
 
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz() -> Response:
+        """Readiness check: mailbox-root writable + tenants file readable.
+
+        Returns 200 with {"status": "ready"} when both pass, 503 with
+        {"status": "not_ready", "reasons": [...]} otherwise.
+        """
+        reasons: list[str] = []
+        if not mailbox_root.exists():
+            reasons.append(f"mailbox root missing: {mailbox_root}")
+        elif not mailbox_root.is_dir():
+            reasons.append(f"mailbox root not a directory: {mailbox_root}")
+        else:
+            try:
+                probe = mailbox_root / ".readyz_probe"
+                probe.write_text("ok")
+                probe.unlink()
+            except OSError as e:
+                reasons.append(f"mailbox root not writable: {e}")
+        if not tenants_path.exists():
+            reasons.append(f"tenants file missing: {tenants_path}")
+        elif not tenants_path.is_file():
+            reasons.append(f"tenants path not a file: {tenants_path}")
+        if reasons:
+            return Response(
+                status_code=503,
+                content=json.dumps({"status": "not_ready", "reasons": reasons}),
+                media_type="application/json",
+            )
+        return Response(
+            content=json.dumps({"status": "ready"}),
+            media_type="application/json",
+        )
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        """Prometheus text format. No auth — same as /health."""
+        return Response(
+            content=get_registry().render(),
+            media_type="text/plain; version=0.0.4",
+        )
 
     @app.get("/v1/inbox", response_model=InboxResponse)
     def list_inbox(
@@ -160,4 +225,12 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(e))
         return RunWorkflowResponse(state_keys=sorted(state._data.keys()))
 
+    # Wrap the whole ASGI stack with RequestIdMiddleware. Starlette runs
+    # middlewares in reverse-registration order, so this outermost wrap
+    # means the middleware sees the raw inbound request and can write
+    # the X-Request-Id header on the response before the FastAPI router
+    # processes anything.
+    app.add_middleware(RequestIdMiddleware)
+
     return app
+
