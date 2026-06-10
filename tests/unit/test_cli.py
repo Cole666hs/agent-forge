@@ -7,6 +7,7 @@ writes to a temp dir.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -154,6 +155,103 @@ def test_run_executes_workflow(runner: CliRunner, tmp_path: Path):
     # The respond step should have written to user's inbox
     user_inbox = mbox.list_inbox("user", include_read=True)
     assert any("got: hello" in m.content for m in user_inbox)
+
+
+# ---------------------------------------------------------------------------
+# --llm wiring (Phase 6.5: CLI LLM hookup)
+# ---------------------------------------------------------------------------
+
+def test_run_auto_resolves_llm_from_env(runner: CliRunner, tmp_path: Path, monkeypatch):
+    """--llm auto (default) reads OPENROUTER_API_KEY from env and constructs
+    a provider. Workflows with llm_call steps must reach the step, not fail
+    on 'no LLM provider configured'."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-fake")
+    wf_yaml = tmp_path / "wf.yaml"
+    wf_yaml.write_text(yaml.safe_dump({
+        "name": "llmtest",
+        "steps": [
+            {"id": "receive", "type": "receive"},
+            # Use a fake chat() implementation so we don't hit the network
+            {"id": "think", "type": "llm_call",
+             "inputs": {"system": "sys", "user": "{{ receive.content }}", "output_key": "think"}},
+            {"id": "respond", "type": "respond",
+             "inputs": {"to": "user", "content": "echo: {{ think }}"}},
+        ],
+    }))
+    mailbox = tmp_path / "mailbox"
+    mailbox.mkdir()
+    from agentforge.core.mailbox import FileMailbox
+    from agentforge.core.message import Message
+    FileMailbox(root=mailbox).send(Message(from_="user", to="bot", content="hi"))
+
+    # Patch urllib.request.urlopen with a context-manager mock that
+    # returns a fake OpenAI-compat completion body.
+    fake_body = json.dumps({
+        "choices": [{"message": {"content": "  hi from fake llm  "}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 4},
+    }).encode("utf-8")
+
+    class _MockResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return fake_body
+
+    with mock.patch("urllib.request.urlopen", return_value=_MockResp()):
+        result = runner.invoke(cli, [
+            "run", str(wf_yaml),
+            "--mailbox", str(mailbox),
+            "--agent", "bot",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert "OpenRouterAdapter" in result.output
+    user_inbox = FileMailbox(root=mailbox).list_inbox("user", include_read=True)
+    assert any("hi from fake llm" in m.content for m in user_inbox), user_inbox
+
+
+def test_run_explicit_no_llm_skips_llm_construction(runner: CliRunner, tmp_path: Path, monkeypatch):
+    """--llm '' (empty) explicitly disables LLM. Workflows with no llm_call
+    step must still work without an LLM provider."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    wf_yaml = tmp_path / "wf.yaml"
+    wf_yaml.write_text(yaml.safe_dump({
+        "name": "nollm",
+        "steps": [
+            {"id": "receive", "type": "receive"},
+            {"id": "respond", "type": "respond",
+             "inputs": {"to": "user", "content": "no llm needed"}},
+        ],
+    }))
+    mailbox = tmp_path / "mailbox"
+    mailbox.mkdir()
+    from agentforge.core.mailbox import FileMailbox
+    from agentforge.core.message import Message
+    FileMailbox(root=mailbox).send(Message(from_="user", to="bot", content="x"))
+
+    result = runner.invoke(cli, [
+        "run", str(wf_yaml),
+        "--mailbox", str(mailbox),
+        "--agent", "bot",
+        "--llm", "",
+    ])
+    assert result.exit_code == 0, result.output
+    # The "llm: ..." line is suppressed when provider is None
+    assert "llm:" not in result.output
+
+
+def test_run_unknown_llm_spec_errors_cleanly(runner: CliRunner, tmp_path: Path):
+    """--llm garbage prints a clear usage error, not a stacktrace."""
+    wf_yaml = tmp_path / "wf.yaml"
+    wf_yaml.write_text(yaml.safe_dump({"name": "x", "steps": []}))
+    result = runner.invoke(cli, [
+        "run", str(wf_yaml),
+        "--mailbox", str(tmp_path / "mailbox"),
+        "--agent", "x",
+        "--llm", "garbage",
+    ])
+    assert result.exit_code != 0
+    assert "unknown provider" in result.output.lower() or "usage" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

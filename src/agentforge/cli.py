@@ -24,6 +24,8 @@ import click
 import yaml
 
 from agentforge import __version__
+from agentforge.adapters.llm import LLMError, make_provider
+from agentforge.adapters.base import BaseLLMAdapter
 from agentforge.core.mailbox import FileMailbox
 from agentforge.workflows.engine import State, Workflow, WorkflowError
 
@@ -130,12 +132,15 @@ def init(name: str) -> None:
               help="Poll the inbox continuously instead of running once.")
 @click.option("--watch-interval", default=5, show_default=True,
               help="Seconds between inbox polls when --watch is set.")
+@click.option("--llm", default="auto", show_default=True,
+              help='LLM provider: "auto"|"openrouter"|"minimax"|"ollama"|"" (none).')
 def run(
     workflow: str,
     mailbox: str,
     agent: str,
     watch: bool,
     watch_interval: int,
+    llm: str,
 ) -> None:
     """Execute a workflow file.
 
@@ -156,12 +161,15 @@ def run(
     mbox = FileMailbox(root=mb_root)
     wf = Workflow.from_yaml(wf_path)
     click.echo(f"loaded workflow: {wf.name} ({len(wf.steps)} steps)")
+    llm_provider = _resolve_llm(llm)
+    if llm_provider is not None:
+        click.echo(f"  llm: {type(llm_provider).__name__}")
     try:
         if watch:
-            asyncio.run(_watch_loop(wf, mbox, agent, watch_interval))
+            asyncio.run(_watch_loop(wf, mbox, agent, watch_interval, llm_provider))
         else:
             state = State()
-            asyncio.run(wf.run(state=state, mailbox=mbox, llm=None, agent_name=agent))
+            asyncio.run(wf.run(state=state, mailbox=mbox, llm=llm_provider, agent_name=agent))
             click.echo(f"workflow completed. state keys: {sorted(state._data.keys())}")
     except WorkflowError as e:
         click.echo(f"workflow failed: {e}", err=True)
@@ -176,6 +184,7 @@ async def _watch_loop(
     mbox: FileMailbox,
     agent: str,
     interval: int,
+    llm: BaseLLMAdapter | None,
 ) -> None:
     """Poll the inbox and run the workflow for each unread message.
 
@@ -193,7 +202,7 @@ async def _watch_loop(
                 click.echo(f"→ running workflow for message {unread[0].id}")
                 state = State()
                 try:
-                    await wf.run(state=state, mailbox=mbox, llm=None, agent_name=agent)
+                    await wf.run(state=state, mailbox=mbox, llm=llm, agent_name=agent)
                 except WorkflowError as e:
                     click.echo(f"  workflow error: {e}", err=True)
                 click.echo(f"  state keys after run: {sorted(state._data.keys())}")
@@ -343,6 +352,39 @@ def _load_env(path: Path) -> None:
             continue
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip())
+
+
+def _resolve_llm(spec: str | None) -> BaseLLMAdapter | None:
+    """Construct an LLM provider from --llm spec, or auto-detect.
+
+    Spec format: ``"openrouter"`` | ``"minimax"`` | ``"ollama"`` | ``"auto"``
+    (default). ``"auto"`` picks a provider in priority order — providers
+    whose env var is set win, and ollama (no env needed) is the last-resort
+    fallback. Returns ``None`` only if the spec is explicitly empty —
+    workflows without ``llm_call`` steps don't need a provider.
+    """
+    if spec is None or spec == "":
+        return None
+    if spec == "auto":
+        from agentforge.adapters.llm_compat import BaseOpenAICompatLLMAdapter
+        # Prefer providers with real env vars set (cheaper, deterministic).
+        # Ollama is the fallback — it always works if ollama serve is up.
+        for cls in BaseOpenAICompatLLMAdapter.__subclasses__():
+            if cls.ENV_API_KEY and os.environ.get(cls.ENV_API_KEY):
+                return cls()
+        # No env-keyed provider found — try ollama
+        try:
+            return make_provider("ollama")
+        except LLMError:
+            pass
+        raise click.UsageError(
+            "no LLM provider auto-detected. Set OPENROUTER_API_KEY, "
+            "MINIMAX_API_KEY, or start ollama serve."
+        )
+    try:
+        return make_provider(spec)
+    except LLMError as e:
+        raise click.UsageError(str(e)) from None
 
 
 # ---------------------------------------------------------------------------
