@@ -40,23 +40,20 @@ logger = logging.getLogger(__name__)
 @click.version_option(__version__, prog_name="agentforge")
 @click.option("--mailbox-root", default="./mailbox", show_default=True,
               help="Mailbox root directory (overrides the per-command default).")
-@click.option("--tenants", default="./tenants.json", show_default=True,
-              help="Path to the tenant registry JSON file.")
-@click.option("--usage", "usage_path", default="./usage.json", show_default=True,
-              help="Path to the per-tenant usage JSON file (for billing/quota).")
+@click.option("--state-db", "state_db_path", default="./state.db", show_default=True,
+              help="Path to the SQLite state database (tenants, usage, runs).")
 @click.option("--log-format", default=None, envvar="AGENTFORGE_LOG_FORMAT",
               help='Log format: "json" or "text" (default: text, or $AGENTFORGE_LOG_FORMAT).')
 @click.option("--log-level", default=None, envvar="AGENTFORGE_LOG_LEVEL",
               help='Log level: "DEBUG"|"INFO"|"WARNING"|"ERROR" (default: INFO, or $AGENTFORGE_LOG_LEVEL).')
 @click.pass_context
-def cli(ctx: click.Context, mailbox_root: str, tenants: str, usage_path: str,
+def cli(ctx: click.Context, mailbox_root: str, state_db_path: str,
         log_format: str | None, log_level: str | None) -> None:
     """agentforge — self-hosted multi-agent orchestration."""
     # Stash on context so subcommands can pick them up
     ctx.ensure_object(dict)
     ctx.obj["mailbox_root"] = Path(mailbox_root)
-    ctx.obj["tenants_path"] = Path(tenants)
-    ctx.obj["usage_path"] = Path(usage_path)
+    ctx.obj["state_db"] = Path(state_db_path)
     # Configure logging once at process start. Idempotent.
     configure_logging(fmt=log_format, level=log_level)
     if ctx.invoked_subcommand is None:
@@ -178,13 +175,14 @@ def run(
     if llm_provider is not None:
         click.echo(f"  llm: {type(llm_provider).__name__}")
         # If --tenant was given, wire billing/quota enforcement.
+        # v0.6.0: tenants + usage live in the same SQLite state.db.
         if tenant:
-            from agentforge.billing.usage import UsageStore
             from agentforge.observability.instrumentation import instrument_llm
             from agentforge.observability.metrics import get_registry
-            from agentforge.tenants.registry import TenantRegistry
-            registry = TenantRegistry(path=Path("./tenants.json").resolve())
-            usage = UsageStore(path=Path("./usage.json").resolve())
+            from agentforge.state import State as AppState
+            app_state = AppState(state_db)
+            registry = app_state.tenants
+            usage = app_state.usage
             instrument_llm(
                 llm_provider, registry=get_registry(),
                 tenants=registry, usage=usage, tenant_id=tenant,
@@ -285,13 +283,15 @@ def tenants(ctx: click.Context) -> None:
 @click.pass_context
 def tenants_add(ctx: click.Context, tenant_id: str, api_key: str | None) -> None:
     """Register a new tenant."""
-    from agentforge.tenants.registry import TenantRegistry
-    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
     try:
-        key = reg.add(tenant_id, api_key=api_key)
+        key = state.tenants.add(tenant_id, api_key=api_key)
     except ValueError as e:
         click.echo(f"error: {e}", err=True)
         ctx.exit(1)
+    finally:
+        state.close()
     click.echo(f"tenant {tenant_id!r} registered.")
     click.echo(f"API key: {key}")
     click.echo("(store this now — it will not be shown again)")
@@ -301,9 +301,12 @@ def tenants_add(ctx: click.Context, tenant_id: str, api_key: str | None) -> None
 @click.pass_context
 def tenants_list(ctx: click.Context) -> None:
     """List all registered tenants."""
-    from agentforge.tenants.registry import TenantRegistry
-    reg = TenantRegistry(path=ctx.obj["tenants_path"])
-    names = reg.list_tenants()
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
+    try:
+        names = state.tenants.list_tenants()
+    finally:
+        state.close()
     if not names:
         click.echo("(no tenants — add one with `agentforge tenants add <id>`)")
         return
@@ -316,9 +319,13 @@ def tenants_list(ctx: click.Context) -> None:
 @click.pass_context
 def tenants_remove(ctx: click.Context, tenant_id: str) -> None:
     """Remove a tenant and revoke its API key."""
-    from agentforge.tenants.registry import TenantRegistry
-    reg = TenantRegistry(path=ctx.obj["tenants_path"])
-    if reg.remove(tenant_id):
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
+    try:
+        removed = state.tenants.remove(tenant_id)
+    finally:
+        state.close()
+    if removed:
         click.echo(f"removed {tenant_id!r}")
     else:
         click.echo(f"error: tenant {tenant_id!r} not found", err=True)
@@ -334,14 +341,16 @@ def tenants_remove(ctx: click.Context, tenant_id: str) -> None:
 def tenants_set_plan(ctx: click.Context, tenant_id: str, plan: str) -> None:
     """Change a tenant's plan tier."""
     from agentforge.billing.plans import Plan
-    from agentforge.tenants.registry import TenantRegistry
-    reg = TenantRegistry(path=ctx.obj["tenants_path"])
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
     try:
-        reg.set_plan(tenant_id, Plan(plan))
+        state.tenants.set_plan(tenant_id, Plan(plan))
     except ValueError as e:
         click.echo(f"error: {e}", err=True)
         ctx.exit(1)
         return
+    finally:
+        state.close()
     click.echo(f"tenant {tenant_id!r} plan set to {plan}")
 
 
@@ -352,30 +361,31 @@ def tenants_usage(ctx: click.Context, tenant_id: str) -> None:
     """Show current-month token usage and quota for a tenant."""
     from agentforge.billing.plans import PLAN_LIMITS
     from agentforge.billing.quota import quota_status
-    from agentforge.billing.usage import UsageStore
-    from agentforge.tenants.registry import TenantRegistry
-    reg = TenantRegistry(path=ctx.obj["tenants_path"])
-    usage = UsageStore(path=ctx.obj["usage_path"])
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
     try:
-        qs = quota_status(reg, usage, tenant_id)
-    except ValueError as e:
-        click.echo(f"error: {e}", err=True)
-        ctx.exit(1)
-        return
-    limit = PLAN_LIMITS[qs.plan]
-    limit_str = "unlimited" if limit is None else f"{limit:,}"
-    remaining_str = "unlimited" if qs.remaining is None else f"{qs.remaining:,}"
-    pct_str = "n/a" if limit is None else f"{qs.pct * 100:.1f}%"
-    warning_marker = " [WARNING]" if qs.warning else ""
-    exceeded_marker = " [EXCEEDED]" if qs.exceeded else ""
-    click.echo(
-        f"tenant:    {qs.tenant_id}\n"
-        f"plan:      {qs.plan.value}\n"
-        f"used:      {qs.used:,} tokens\n"
-        f"limit:     {limit_str} tokens\n"
-        f"remaining: {remaining_str} tokens\n"
-        f"percent:   {pct_str}{warning_marker}{exceeded_marker}"
-    )
+        try:
+            qs = quota_status(state.tenants, state.usage, tenant_id)
+        except ValueError as e:
+            click.echo(f"error: {e}", err=True)
+            ctx.exit(1)
+            return
+        limit = PLAN_LIMITS[qs.plan]
+        limit_str = "unlimited" if limit is None else f"{limit:,}"
+        remaining_str = "unlimited" if qs.remaining is None else f"{qs.remaining:,}"
+        pct_str = "n/a" if limit is None else f"{qs.pct * 100:.1f}%"
+        warning_marker = " [WARNING]" if qs.warning else ""
+        exceeded_marker = " [EXCEEDED]" if qs.exceeded else ""
+        click.echo(
+            f"tenant:    {qs.tenant_id}\n"
+            f"plan:      {qs.plan.value}\n"
+            f"used:      {qs.used:,} tokens\n"
+            f"limit:     {limit_str} tokens\n"
+            f"remaining: {remaining_str} tokens\n"
+            f"percent:   {pct_str}{warning_marker}{exceeded_marker}"
+        )
+    finally:
+        state.close()
 
 
 # ---------------------------------------------------------------------------
@@ -405,15 +415,21 @@ def serve(
         ctx.exit(1)
     from agentforge.serve import create_app
     mailbox_root = ctx.obj["mailbox_root"]
+    # v0.6.0: `tenants_path` is the JSON file used only as the
+    # source for a one-shot migration to the SQLite state.db.
+    # The serve subcommand's --state-db flag wins; otherwise we
+    # default to <mailbox-root>/../state.db.
+    legacy_tenants = ctx.obj["state_db"].with_name("tenants.json")
     app = create_app(
-        tenants_path=ctx.obj["tenants_path"],
+        tenants_path=legacy_tenants,
         mailbox_root=mailbox_root,
         state_db=Path(state_db) if state_db else None,
         workflows_dir=Path(workflows_dir) if workflows_dir else None,
     )
     click.echo(f"agentforge serving on http://{host}:{port}")
-    click.echo(f"  mailbox: {mailbox_root}")
-    click.echo(f"  tenants: {ctx.obj['tenants_path']}")
+    click.echo(f"  mailbox:     {mailbox_root}")
+    click.echo(f"  state.db:    {state_db or mailbox_root.parent / 'state.db'}")
+    click.echo(f"  legacy JSON: {legacy_tenants} (one-shot migration source)")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

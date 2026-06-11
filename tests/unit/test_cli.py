@@ -77,26 +77,29 @@ def test_tenants_add_prints_generated_key(runner: CliRunner):
     """agentforge tenants add <id> creates the tenant and prints the
     generated API key (one-time display, like moltbook)."""
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
+        state_db = Path(fs) / "state.db"
         result = runner.invoke(cli, [
-            "--tenants", str(tenants_path), "tenants", "add", "acme",
+            "--state-db", str(state_db), "tenants", "add", "acme",
         ])
         assert result.exit_code == 0, result.output
         assert "acme" in result.output
         assert "API key:" in result.output
-        # Key was actually written
-        import json
-        data = json.loads(tenants_path.read_text())
-        assert "acme" in data["tenants"]
+        # v0.6.0: key was written to SQLite state.db
+        from agentforge.state import State as AppState
+        s = AppState(state_db)
+        try:
+            assert "acme" in s.tenants.list_tenants()
+        finally:
+            s.close()
 
 
 def test_tenants_list_shows_added_tenants(runner: CliRunner):
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
+        state_db = Path(fs) / "state.db"
         # Add two
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "corp"])
-        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "list"])
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "acme"])
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "corp"])
+        result = runner.invoke(cli, ["--state-db", str(state_db), "tenants", "list"])
         assert result.exit_code == 0
         assert "acme" in result.output
         assert "corp" in result.output
@@ -104,12 +107,12 @@ def test_tenants_list_shows_added_tenants(runner: CliRunner):
 
 def test_tenants_remove(runner: CliRunner):
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
-        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "remove", "acme"])
+        state_db = Path(fs) / "state.db"
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "acme"])
+        result = runner.invoke(cli, ["--state-db", str(state_db), "tenants", "remove", "acme"])
         assert result.exit_code == 0
         # Subsequent list should be empty
-        result = runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "list"])
+        result = runner.invoke(cli, ["--state-db", str(state_db), "tenants", "list"])
         assert "acme" not in result.output
 
 
@@ -119,53 +122,59 @@ def test_tenants_remove(runner: CliRunner):
 
 def test_tenants_set_plan_updates_tenant(runner: CliRunner):
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        state_db = Path(fs) / "state.db"
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "acme"])
         result = runner.invoke(
             cli,
-            ["--tenants", str(tenants_path), "tenants", "set-plan", "acme", "--plan", "pro"],
+            ["--state-db", str(state_db), "tenants", "set-plan", "acme", "--plan", "pro"],
         )
         assert result.exit_code == 0, result.output
         assert "pro" in result.output.lower()
-        # Persisted
-        data = json.loads(tenants_path.read_text())
-        assert data["tenants"]["acme"]["plan"] == "pro"
+        # Persisted in SQLite
+        from agentforge.state import State as AppState
+        from agentforge.billing.plans import Plan
+        s = AppState(state_db)
+        try:
+            assert s.tenants.get_plan("acme") == Plan.PRO
+        finally:
+            s.close()
 
 
 def test_tenants_set_plan_invalid_tenant(runner: CliRunner):
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
+        state_db = Path(fs) / "state.db"
         result = runner.invoke(
             cli,
-            ["--tenants", str(tenants_path), "tenants", "set-plan", "ghost", "--plan", "pro"],
+            ["--state-db", str(state_db), "tenants", "set-plan", "ghost", "--plan", "pro"],
         )
         assert result.exit_code != 0
 
 
 def test_tenants_set_plan_invalid_plan(runner: CliRunner):
     with runner.isolated_filesystem() as fs:
-        tenants_path = Path(fs) / "tenants.json"
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
+        state_db = Path(fs) / "state.db"
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "acme"])
         result = runner.invoke(
             cli,
-            ["--tenants", str(tenants_path), "tenants", "set-plan", "acme", "--plan", "premium"],
+            ["--state-db", str(state_db), "tenants", "set-plan", "acme", "--plan", "premium"],
         )
         assert result.exit_code != 0
 
 
 def test_tenants_usage_prints_summary(runner: CliRunner, monkeypatch):
     with runner.isolated_filesystem() as fs:
-        fs_path = Path(fs)
-        tenants_path = fs_path / "tenants.json"
-        usage_path = fs_path / "usage.json"
-        # Tenant + pre-seeded usage
-        runner.invoke(cli, ["--tenants", str(tenants_path), "tenants", "add", "acme"])
-        from agentforge.billing.usage import UsageStore
-        UsageStore(path=usage_path).record("acme", 42_000)
+        state_db = Path(fs) / "state.db"
+        # Tenant + pre-seeded usage in the same SQLite DB (v0.6.0)
+        runner.invoke(cli, ["--state-db", str(state_db), "tenants", "add", "acme"])
+        from agentforge.state import State as AppState
+        s = AppState(state_db)
+        try:
+            s.usage.record("acme", 42_000)
+        finally:
+            s.close()
         result = runner.invoke(
             cli,
-            ["--tenants", str(tenants_path), "--usage", str(usage_path),
-             "tenants", "usage", "acme"],
+            ["--state-db", str(state_db), "tenants", "usage", "acme"],
         )
         assert result.exit_code == 0, result.output
         assert "acme" in result.output

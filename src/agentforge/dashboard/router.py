@@ -8,8 +8,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from agentforge.billing.plans import Plan
 from agentforge.billing.quota import quota_status
-from agentforge.billing.usage import UsageStore
-from agentforge.core.runs import RunStore
+from agentforge.billing.usage import UsageStore  # noqa: F401  (re-exported for tests)
+from agentforge.core.runs import RunStore  # noqa: F401  (re-exported for tests)
 from agentforge.dashboard.auth import (
     COOKIE_NAME,
     get_registry,
@@ -97,8 +97,7 @@ def _list_workflows(workflows_dir: Path) -> list[dict]:
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request) -> Response:
     tenant_id = tenant_from_cookie_or_401(request)
-    usage = UsageStore(path=request.app.state.usage_path)
-    qs = quota_status(request.app.state.tenants, usage, tenant_id)
+    qs = quota_status(request.app.state.tenants, request.app.state.usage, tenant_id)
     workflows = _list_workflows(request.app.state.workflows_dir)
     templates = request.app.state.templates
     return templates.get_template("overview.html").render(
@@ -111,7 +110,7 @@ def overview(request: Request) -> Response:
 def tenants_list(request: Request) -> Response:
     tenant_id = tenant_from_cookie_or_401(request)
     registry = request.app.state.tenants
-    usage = UsageStore(path=request.app.state.usage_path)
+    usage = request.app.state.usage
     rows = []
     for tid in registry.list_tenants():
         qs = quota_status(registry, usage, tid)
@@ -154,7 +153,7 @@ def tenants_delete(request: Request, tenant_id: str) -> Response:
 def tenant_detail(request: Request, tenant_id: str) -> Response:
     auth_tenant = tenant_from_cookie_or_401(request)
     registry = request.app.state.tenants
-    usage = UsageStore(path=request.app.state.usage_path)
+    usage = request.app.state.usage
     qs = quota_status(registry, usage, tenant_id)
     new_key = request.query_params.get("new_key")
     templates = request.app.state.templates
@@ -315,7 +314,7 @@ def workflow_runs(request: Request, name: str) -> Response:
     """Render the runs history page for one workflow. Initial render
     pre-fills the table; HTMX polls /partials/runs every 5s for updates."""
     tenant_from_cookie_or_401(request)
-    run_store: RunStore = request.app.state.run_store
+    run_store = request.app.state.runs
     runs = run_store.list_runs(name, limit=50)
     templates = request.app.state.templates
     return templates.get_template("workflow_runs.html").render(
@@ -327,7 +326,7 @@ def workflow_runs(request: Request, name: str) -> Response:
 def partial_runs(request: Request, name: str) -> Response:
     """HTMX fragment: rendered rows of the runs table for one workflow."""
     tenant_from_cookie_or_401(request)
-    run_store: RunStore = request.app.state.run_store
+    run_store = request.app.state.runs
     runs = run_store.list_runs(name, limit=50)
     templates = request.app.state.templates
     return templates.get_template("_partial_runs_rows.html").render(
@@ -379,7 +378,7 @@ def partial_usage(request: Request) -> Response:
     so this endpoint fires every 5 seconds and the bar updates in place.
     """
     tenant_id = tenant_from_cookie_or_401(request)
-    usage = UsageStore(path=request.app.state.usage_path)
+    usage = request.app.state.usage
     qs = quota_status(request.app.state.tenants, usage, tenant_id)
     templates = request.app.state.templates
     return templates.get_template("_partial_usage.html").render(
@@ -397,7 +396,7 @@ def partial_tenants(request: Request) -> Response:
     """
     tenant_from_cookie_or_401(request)  # 401 if not signed in
     registry = request.app.state.tenants
-    usage = UsageStore(path=request.app.state.usage_path)
+    usage = request.app.state.usage
     rows = []
     for tid in registry.list_tenants():
         qs = quota_status(registry, usage, tid)

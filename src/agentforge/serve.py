@@ -38,8 +38,10 @@ from agentforge.core.runs import RunRecord, RunStore
 from agentforge.dashboard import router as dashboard_router
 from agentforge.dashboard.router import get_templates
 from agentforge.observability.instrumentation import instrument_mailbox
+from agentforge.observability.logging import configure_logging
 from agentforge.observability.metrics import get_registry
 from agentforge.observability.middleware import RequestIdMiddleware
+from agentforge.state import State as AppState, migrate_json_to_sqlite
 from agentforge.tenants.registry import TenantRegistry
 from agentforge.workflows.engine import State, Workflow, WorkflowError
 
@@ -95,11 +97,24 @@ def create_app(
     state_db = Path(state_db) if state_db is not None else mailbox_root.parent / "state.db"
     workflows_dir = Path(workflows_dir) if workflows_dir is not None else mailbox_root.parent / "workflows"
 
-    app = FastAPI(title="agentforge", version="0.2.0")
-    registry = TenantRegistry(path=tenants_path)
-
-    # Per-tenant usage store (shared across requests in this process).
-    usage_store = UsageStore(path=mailbox_root.parent / "usage.json")
+    app = FastAPI(title="agentforge", version="0.6.0")
+    # SQLite-backed state (v0.6.0). One State object, three handles
+    # (tenants, usage, runs) all sharing one connection + one lock.
+    # Falls back to the JSON files if state_db is explicitly None.
+    state = AppState(state_db)
+    # Backwards-compat: if the user has legacy JSON files lying around
+    # and hasn't migrated, do it now. migrate_json_to_sqlite is
+    # idempotent (INSERT OR IGNORE) so safe to call on every boot.
+    legacy_tenants = tenants_path if tenants_path.exists() else None
+    legacy_usage = (mailbox_root.parent / "usage.json") if (mailbox_root.parent / "usage.json").exists() else None
+    legacy_runs = (mailbox_root.parent / "runs.json") if (mailbox_root.parent / "runs.json").exists() else None
+    if any(p is not None for p in (legacy_tenants, legacy_usage, legacy_runs)):
+        migrate_json_to_sqlite(legacy_tenants, legacy_usage, legacy_runs, state)
+    # `registry` and `usage_store` keep their old names so the rest of
+    # serve.py doesn't need to change. They're now SQLite-backed.
+    registry = state.tenants
+    usage_store = state.usage
+    run_store = state.runs
 
     # -- auth dependency ---------------------------------------------------
 
@@ -271,7 +286,7 @@ def create_app(
             duration = (datetime.fromisoformat(ended_at)
                         - datetime.fromisoformat(started_at)).total_seconds()
             try:
-                RunStore(path=mailbox_root.parent / "runs.json").record(RunRecord(
+                run_store.record(RunRecord(
                     id=run_id, workflow=name, tenant_id=tenant_id,
                     agent=body.agent, started_at=started_at, ended_at=ended_at,
                     status="quota_exceeded", duration_seconds=duration,
@@ -301,7 +316,7 @@ def create_app(
                 duration = (datetime.fromisoformat(ended_at)
                             - datetime.fromisoformat(started_at)).total_seconds()
                 try:
-                    RunStore(path=mailbox_root.parent / "runs.json").record(RunRecord(
+                    run_store.record(RunRecord(
                         id=run_id, workflow=name, tenant_id=tenant_id,
                         agent=body.agent, started_at=started_at, ended_at=ended_at,
                         status=status_label, duration_seconds=duration,
@@ -321,12 +336,14 @@ def create_app(
     # -- dashboard wiring --------------------------------------------------
     # State that the dashboard router needs (templates, registry, paths).
     # Mounted BEFORE we add the router so the router's dependency lookups
-    # resolve.
+    # resolve. v0.6.0: tenants + usage + runs are all SQLite-backed now —
+    # the dashboard router reads these handles directly, no per-request
+    # file IO.
     app.state.tenants = registry
+    app.state.usage = usage_store
+    app.state.runs = run_store
     app.state.templates = get_templates()
-    app.state.usage_path = mailbox_root.parent / "usage.json"
     app.state.workflows_dir = workflows_dir
-    app.state.run_store = RunStore(path=mailbox_root.parent / "runs.json")
 
     # -- OTLP exporter (v0.5.5) --------------------------------------------
     # If OTEL_EXPORTER_OTLP_ENDPOINT is set, start a background thread that

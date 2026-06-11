@@ -40,11 +40,18 @@ class QuotaExceededError(Exception):
 
 
 def quota_status(
-    registry: TenantRegistry,
-    usage: UsageStore,
+    registry,  # TenantRegistry | SQLiteTenantRegistry (duck-typed)
+    usage,     # UsageStore | SQLiteUsageStore (duck-typed)
     tenant_id: str,
 ) -> QuotaStatus:
-    """Compute the current quota position for a tenant."""
+    """Compute the current quota position for a tenant.
+
+    Type hints are loose (no annotation) because this function is
+    backend-agnostic: it works with the JSON `TenantRegistry`/`UsageStore`
+    AND the SQLite `SQLiteTenantRegistry`/`SQLiteUsageStore` from
+    `agentforge.state`. Both expose `.get_plan(tenant_id)` and
+    `.get(tenant_id)` respectively.
+    """
     plan = registry.get_plan(tenant_id)
     u = usage.get(tenant_id)
     limit = PLAN_LIMITS[plan]
@@ -66,8 +73,8 @@ def quota_status(
 
 
 def enforce_quota(
-    registry: TenantRegistry,
-    usage: UsageStore,
+    registry,  # duck-typed (see quota_status)
+    usage,     # duck-typed
     tenant_id: str,
     tokens_to_add: int,
 ) -> QuotaStatus:

@@ -117,8 +117,10 @@ def test_dashboard_tenants_create_form(tmp_path):
         follow_redirects=False,
     )
     assert r.status_code in (302, 303, 200)
-    reg = TenantRegistry(path=tmp_path / "tenants.json")
-    assert "newco" in reg.list_tenants()
+    # v0.6.0: tenants live in SQLite (state.db) now, not in tenants.json.
+    # The dashboard router reads from app.state.tenants which is the
+    # SQLite handle. Use the app's own handle to assert.
+    assert "newco" in app.state.tenants.list_tenants()
 
 
 def test_dashboard_tenants_delete(tmp_path):
@@ -136,8 +138,8 @@ def test_dashboard_tenants_delete(tmp_path):
         follow_redirects=False,
     )
     assert r.status_code in (302, 303, 200)
-    reg = TenantRegistry(path=tmp_path / "tenants.json")
-    assert "victim" not in reg.list_tenants()
+    # v0.6.0: read from the app's SQLite handle, not the JSON file
+    assert "victim" not in app.state.tenants.list_tenants()
 
 
 def test_dashboard_tenant_detail_shows_plan_switcher(tmp_path):
@@ -175,8 +177,8 @@ def test_dashboard_tenant_plan_switch(tmp_path):
         follow_redirects=False,
     )
     assert r.status_code in (302, 303, 200)
-    reg = TenantRegistry(path=tmp_path / "tenants.json")
-    assert reg.get_plan("acme").value == "pro"
+    # v0.6.0: plan lives in SQLite now
+    assert app.state.tenants.get_plan("acme").value == "pro"
 
 
 def test_dashboard_workflows_lists_yaml_files(tmp_path):

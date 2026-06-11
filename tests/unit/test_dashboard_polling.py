@@ -59,7 +59,8 @@ def test_usage_partial_requires_auth(app_setup):
 
 def test_usage_partial_reflects_current_usage(app_setup):
     app, ctx = app_setup
-    UsageStore(path=ctx["mailbox_root"].parent / "usage.json").record("acme", 50_000)
+    # v0.6.0: usage lives in SQLite now
+    app.state.usage.record("acme", 50_000)
     client = TestClient(app)
     r = client.get(
         "/dashboard/partials/usage",
