@@ -14,6 +14,7 @@ Custom step types can be registered via @register_step_type("name", fn).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -40,6 +41,14 @@ logger = logging.getLogger(__name__)
 class WorkflowError(RuntimeError):
     """Raised on YAML parse errors, unknown step types, or step failures
     that are not retried."""
+
+
+class WorkflowCancelled(Exception):
+    """Raised by `Workflow.run()` when the caller flips the cancellation
+    event between steps (v0.8.0 #1). The run record is marked
+    status='cancelled'; the partial state up to the last-completed
+    step is preserved.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +290,32 @@ class Workflow:
         llm: Optional["BaseLLMAdapter"],
         agent_name: str,
         state_db: Optional[Path] = None,
+        cancel_event: Optional["asyncio.Event"] = None,
     ) -> State:
-        """Execute all steps in order. State is mutated and (optionally) persisted."""
+        """Execute all steps in order. State is mutated and (optionally) persisted.
+
+        v0.8.0 #1: `cancel_event` is an optional asyncio.Event. If
+        provided, the engine checks it BETWEEN steps (not mid-step —
+        we don't want to interrupt a half-written LLM call or mailbox
+        send). When the event is set, the loop raises WorkflowCancelled
+        after the current step returns. The caller is responsible for
+        updating the run record + publishing a 'cancelled' event.
+        """
         ctx = StepContext(
             mailbox=mailbox, llm=llm, agent_name=agent_name, state_db=state_db,
         )
         for step in self.steps:
+            # Cancellation check: between steps only. Step handlers
+            # themselves are not interruptible — they'd need their own
+            # internal checks (e.g. an LLM call that respects the
+            # event between token chunks). For our built-in step types,
+            # this is sufficient: receive/llm_call/respond are short.
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("workflow %r cancelled before step %s",
+                            self.name, step.id)
+                raise WorkflowCancelled(
+                    f"workflow {self.name!r} cancelled before step {step.id!r}"
+                )
             handler = _STEP_REGISTRY[step.type]
             rendered_inputs = {
                 k: (state.render(v) if isinstance(v, str) else v)
@@ -303,13 +332,18 @@ class Workflow:
                     last_err = e
                     if attempt + 1 < attempts:
                         # Exponential backoff: 1s, 2s, 4s, ...
-                        import asyncio
                         wait = min(2 ** attempt, 30)
                         logger.warning(
                             "step %s attempt %d failed: %s. retrying in %ds",
                             step.id, attempt + 1, e, wait,
                         )
+                        import asyncio
                         await asyncio.sleep(wait)
+                    # Also check cancellation between retry attempts.
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise WorkflowCancelled(
+                            f"workflow {self.name!r} cancelled mid-retry of {step.id!r}"
+                        ) from e
             if last_err is not None:
                 raise WorkflowError(
                     f"step {step.id!r} ({step.type}) failed after {attempts} attempts: {last_err}"

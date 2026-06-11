@@ -21,6 +21,7 @@ Observability:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -43,7 +44,12 @@ from agentforge.observability.metrics import get_registry
 from agentforge.observability.middleware import RequestIdMiddleware
 from agentforge.state import State as AppState, migrate_json_to_sqlite
 from agentforge.tenants.registry import TenantRegistry
-from agentforge.workflows.engine import State, Workflow, WorkflowError
+from agentforge.workflows.engine import (
+    State as EngineState,
+    Workflow,
+    WorkflowCancelled,
+    WorkflowError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +103,7 @@ def create_app(
     state_db = Path(state_db) if state_db is not None else mailbox_root.parent / "state.db"
     workflows_dir = Path(workflows_dir) if workflows_dir is not None else mailbox_root.parent / "workflows"
 
-    app = FastAPI(title="agentforge", version="0.7.1")
+    app = FastAPI(title="agentforge", version="0.8.0")
     # SQLite-backed state (v0.6.0). One State object, three handles
     # (tenants, usage, runs) all sharing one connection + one lock.
     # Falls back to the JSON files if state_db is explicitly None.
@@ -144,6 +150,13 @@ def create_app(
             instrument_mailbox(m, registry=get_registry())
             _mailbox_cache[tenant_id] = m
         return _mailbox_cache[tenant_id]
+
+    # v0.8.0 #1: active-run registry. Maps run_id -> the asyncio.Event
+    # the engine polls between steps. The cancel endpoint looks up the
+    # event by run_id and sets it. Scope: in-process only. A multi-worker
+    # deployment would need a shared cancellation channel (Redis pub/sub
+    # or a DB flag) — out of scope for v0.8.0.
+    active_runs: dict[str, asyncio.Event] = {}
 
     # -- routes ------------------------------------------------------------
 
@@ -254,6 +267,38 @@ def create_app(
             "warning": qs.warning,
             "exceeded": qs.exceeded,
         }
+    @app.post("/v1/workflows/{name}/runs/{run_id}/cancel", include_in_schema=True)
+    def cancel_workflow_run(
+        name: str,
+        run_id: str,
+        tenant_id: str = Depends(require_tenant),
+    ) -> dict:
+        """Signal an in-flight workflow run to stop at the next step
+        boundary. v0.8.0 #1.
+
+        Looks up the run's asyncio.Event in the in-process
+        `active_runs` registry. If the run is not in flight (already
+        finished, or the daemon was restarted since it started),
+        returns 404 with a hint.
+
+        The cancellation is cooperative: the engine checks the event
+        between steps and raises WorkflowCancelled. Long-running
+        steps (a slow LLM call) finish normally; the cancellation
+        takes effect on the next step boundary.
+        """
+        ev = active_runs.get(run_id)
+        if ev is None:
+            # Either the run never existed, finished already, or the
+            # daemon restarted between start and cancel. We can't
+            # tell which from the registry alone — but for the caller,
+            # "not in flight" is the only useful answer.
+            raise HTTPException(
+                status_code=404,
+                detail=f"run {run_id!r} is not active (already finished or never existed)",
+            )
+        ev.set()
+        return {"cancelled": True, "run_id": run_id, "workflow": name}
+
     @app.post("/v1/workflows/{name}/run", response_model=RunWorkflowResponse)
     async def run_workflow(
         name: str,
@@ -265,7 +310,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"workflow {name!r} not found")
         wf = Workflow.from_yaml(wf_path)
         mbox = mailbox_for(tenant_id)
-        state = State(tenant_id=tenant_id)
+        state = EngineState(tenant_id=tenant_id)
         # Run history record. Started now; ended + status filled in finally.
         import uuid
         from datetime import datetime, timezone
@@ -273,6 +318,11 @@ def create_app(
         started_at = datetime.now(timezone.utc).isoformat()
         error_msg: str | None = None
         status_label = "success"
+        # v0.8.0 #1: register a cancellation event for this run. The
+        # engine polls it between steps. The cancel endpoint finds the
+        # event by run_id and sets it.
+        run_event = asyncio.Event()
+        active_runs[run_id] = run_event
         # v0.7.0: emit a 'started' event so dashboard subscribers see
         # the run appear in real time (vs the old 5s HTMX polling).
         run_store.events.publish(
@@ -281,7 +331,18 @@ def create_app(
         )
         try:
             await wf.run(state=state, mailbox=mbox, llm=None,
-                         agent_name=body.agent, state_db=state_db)
+                         agent_name=body.agent, state_db=state_db,
+                         cancel_event=active_runs.get(run_id))
+        except WorkflowCancelled:
+            # v0.8.0 #1: cancellation. The cancel endpoint set the
+            # active_runs[run_id] event; the engine raised this on the
+            # next inter-step check. We do NOT re-raise — the request
+            # succeeds with a normal 200, and the run is recorded as
+            # 'cancelled' by the finally block. From the caller's POV,
+            # the run was "successfully cancelled"; from the audit
+            # trail's POV, the run is just another terminal status.
+            status_label = "cancelled"
+            error_msg = "cancelled by user"
         except QuotaExceededError as e:
             # Quota enforcement at the workflow run level. Currently the
             # LLM provider in `serve` mode is shared (no per-tenant
@@ -316,6 +377,18 @@ def create_app(
                 )
             except Exception:
                 pass
+            # v0.8.0 #4: tenant-quota event (rejected, but the change
+            # is still notable for the overview bar).
+            try:
+                run_store.events.publish(
+                    run_id=run_id,
+                    workflow=f"__tenant_quota__:{tenant_id}",
+                    tenant_id=tenant_id,
+                    kind="quota_changed",
+                    payload={"trigger": "quota_exceeded"},
+                )
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -332,8 +405,10 @@ def create_app(
             error_msg = str(e)
             raise HTTPException(status_code=500, detail=str(e))
         finally:
-            # Record success + error runs (quota_exceeded handled above).
-            if status_label in ("success", "error") and 'wf_path' in dir():
+            # Record success + error + cancelled runs (quota_exceeded
+            # handled above). v0.8.0 #1: 'cancelled' is now a valid
+            # terminal status alongside success and error.
+            if status_label in ("success", "error", "cancelled") and 'wf_path' in dir():
                 ended_at = datetime.now(timezone.utc).isoformat()
                 duration = (datetime.fromisoformat(ended_at)
                             - datetime.fromisoformat(started_at)).total_seconds()
@@ -360,6 +435,27 @@ def create_app(
                     )
                 except Exception:
                     pass
+                # v0.8.0 #4: also publish a tenant-quota event so the
+                # overview page can refresh its quota bar in real time.
+                # We use a synthetic workflow key `__tenant_quota__:<id>`
+                # as a namespace separator; the WS /ws/overview endpoint
+                # subscribes to that key. The event itself doesn't carry
+                # the new quota value — the endpoint re-computes
+                # quota_status() on each event (1 DB read, negligible).
+                try:
+                    run_store.events.publish(
+                        run_id=run_id,
+                        workflow=f"__tenant_quota__:{tenant_id}",
+                        tenant_id=tenant_id,
+                        kind="quota_changed",
+                        payload={"trigger": "run_finished",
+                                 "run_status": status_label},
+                    )
+                except Exception:
+                    pass
+            # Always unregister the cancellation event, even on
+            # unexpected exceptions, so a stuck entry doesn't leak.
+            active_runs.pop(run_id, None)
         return RunWorkflowResponse(state_keys=sorted(state._data.keys()))
 
     # Wrap the whole ASGI stack with RequestIdMiddleware. Starlette runs
@@ -392,7 +488,7 @@ def create_app(
         from agentforge.observability.otlp import OtlpExporter
         app.state.otlp_exporter = OtlpExporter(
             endpoint=_otlp_endpoint, registry=get_registry(),
-            service_name="agentforge", service_version="0.7.1",
+            service_name="agentforge", service_version="0.8.0",
         )
         app.state.otlp_exporter.start()
 

@@ -99,17 +99,23 @@ def test_tenants_partial_requires_auth(app_setup):
 # HTMX polling attrs are present in the rendered full pages
 # ---------------------------------------------------------------------------
 
-def test_overview_page_has_polling_attrs_on_quota_card(app_setup):
+def test_overview_page_has_ws_quota_subscription(app_setup):
+    """v0.8.0 #4: the overview page subscribes to the quota WebSocket
+    instead of polling /partials/usage. The old hx-poll attributes
+    are gone; the page must reference /ws/overview + the renderQuota
+    JS function so the client opens a WebSocket on load."""
     app, ctx = app_setup
     client = TestClient(app)
     r = client.get("/dashboard/", cookies={"agentforge_api_key": ctx["api_key"]})
     assert r.status_code == 200
     body = r.text
-    # The quota card must poll for updates
-    assert 'hx-get="/dashboard/partials/usage"' in body
-    assert "hx-trigger=" in body
-    # The trigger should mention an interval (e.g. every 5s)
-    assert "every" in body
+    # WS endpoint referenced.
+    assert "/dashboard/ws/overview" in body
+    # Old polling attrs are gone.
+    assert 'hx-get="/dashboard/partials/usage"' not in body
+    # JS opens a WebSocket on this page.
+    assert "new WebSocket" in body
+    assert "renderQuota" in body
 
 
 def test_tenants_page_has_polling_attrs_on_table_body(app_setup):

@@ -393,18 +393,35 @@ class SQLiteRunStore:
                 (run.workflow, run.workflow, self.max_per_workflow),
             )
 
-    def list_runs(self, workflow: str, limit: Optional[int] = None) -> List[RunRecord]:
+    def list_runs(
+        self,
+        workflow: str,
+        limit: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> List[RunRecord]:
+        """Return runs for one workflow, newest first.
+
+        `before` is a cursor: if given, only runs with `started_at` strictly
+        less than this value are returned. Used for "load more" pagination
+        on the dashboard. The cursor is the `started_at` of the oldest
+        already-loaded run — passing it back fetches the next page.
+        v0.8.0 #3.
+        """
         sql = (
             "SELECT id, workflow, tenant_id, agent, started_at, ended_at, "
             "status, duration_seconds, error FROM runs "
-            "WHERE workflow = ? ORDER BY started_at DESC"
+            "WHERE workflow = ?"
         )
-        params: tuple = (workflow,)
+        params: list = [workflow]
+        if before is not None:
+            sql += " AND started_at < ?"
+            params.append(before)
+        sql += " ORDER BY started_at DESC"
         if limit is not None:
             sql += " LIMIT ?"
-            params = (workflow, int(limit))
+            params.append(int(limit))
         with self._state._tx() as conn:
-            cur = conn.execute(sql, params)
+            cur = conn.execute(sql, tuple(params))
             return [RunRecord(**dict(row)) for row in cur.fetchall()]
 
 

@@ -18,13 +18,68 @@
     </div>
   </div>
 
-  <div class="card"
-       hx-get="/dashboard/partials/usage"
-       hx-trigger="every 5s"
-       hx-swap="innerHTML">
-    <h2>Token usage this month</h2>
-    {% include "_partial_usage.html" %}
+  {# v0.8.0 #4: the quota card subscribes to /ws/overview. On every
+     server-pushed `quota` frame, the JS re-renders the bar in place.
+     The first paint is server-rendered (no flash of empty content);
+     the WS just keeps it in sync. The old `hx-trigger="every 5s"`
+     polling is gone. #}
+  <div class="card" id="quota-card">
+    <h2>Token usage this month <span id="quota-status" class="muted" style="font-size: 0.7em; font-weight: normal;">live</span></h2>
+    <div id="quota-body">
+      {% include "_partial_usage.html" %}
+    </div>
   </div>
+
+  <script>
+    (function () {
+      const body = document.getElementById("quota-body");
+      const statusEl = document.getElementById("quota-status");
+      if (!body) return;
+      let backoff = 500;
+      function jitter(ms) { return Math.round(ms * (0.5 + Math.random())); }
+
+      function renderQuota(q) {
+        // Re-render the partial body in place. The structure matches
+        // _partial_usage.html (bar + status line). Inline rendering
+        // avoids a roundtrip back to /partials/usage for every update.
+        const pct = Math.min(100, Math.round(q.pct * 100));
+        const usedStr = q.used.toLocaleString();
+        const limitStr = q.limit == null ? "unlimited" : q.limit.toLocaleString();
+        const remainingStr = q.remaining == null ? "∞" : q.remaining.toLocaleString();
+        const warnColor = q.exceeded ? "var(--error)" :
+                          q.warning  ? "var(--warning)" : "var(--ok)";
+        body.innerHTML = [
+          '<div class="bar" style="background: var(--bar-bg);">',
+          '  <div class="bar-fill" style="width: ' + pct + '%; background: ' + warnColor + ';"></div>',
+          '</div>',
+          '<p class="muted">' + usedStr + ' / ' + limitStr + ' tokens used',
+          ' (' + remainingStr + ' remaining, ' + pct + '%).</p>',
+          q.warning  ? '<p style="color: var(--warning);">Approaching plan limit.</p>' : '',
+          q.exceeded ? '<p style="color: var(--error);">Plan limit exceeded.</p>' : '',
+        ].join("");
+      }
+
+      function connect() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const url = proto + "//" + location.host + "/dashboard/ws/overview";
+        if (statusEl) statusEl.textContent = "connecting…";
+        const ws = new WebSocket(url);
+        ws.onopen = function () { backoff = 500; if (statusEl) statusEl.textContent = "live"; };
+        ws.onmessage = function (msg) {
+          let ev; try { ev = JSON.parse(msg.data); } catch (e) { return; }
+          if (ev.kind === "quota") renderQuota(ev);
+          // "hello" frames are pure acks; nothing to render.
+        };
+        ws.onclose = function () {
+          if (statusEl) statusEl.textContent = "reconnecting…";
+          setTimeout(connect, jitter(backoff));
+          backoff = Math.min(backoff * 2, 5000);
+        };
+        ws.onerror = function () { try { ws.close(); } catch (e) {} };
+      }
+      connect();
+    })();
+  </script>
 
   {% if recent_workflows %}
   <div class="card">

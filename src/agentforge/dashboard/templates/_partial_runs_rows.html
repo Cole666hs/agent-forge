@@ -3,7 +3,9 @@
    rendered rows. Status is color-coded: success=green, error=red,
    quota_exceeded=yellow, anything else=gray. #}
 {% for r in runs %}
-<tr>
+{# v0.8.0 #3: data-started-at is the cursor for "load more" pagination.
+   The dashboard JS reads it from the last <tr> in the tbody. #}
+<tr data-started-at="{{ r.started_at }}">
   <td><code>{{ r.id }}</code></td>
   <td>{{ r.agent }}</td>
   <td>

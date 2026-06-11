@@ -25,6 +25,11 @@
           {% endfor %}
         </tbody>
       </table>
+      {# v0.8.0 #3: "load more" button — the JS below fetches the
+         next page (older runs) using the oldest-loaded started_at as
+         the `before` cursor, and appends the new rows. The button
+         is hidden once the partial returns 0 rows. #}
+      <p><button type="button" id="load-more-btn">Load more</button></p>
     {% else %}
       <p class="muted" id="runs-empty">No runs yet for <code>{{ workflow_name }}</code>. The first run shows up here in real time.</p>
       <table id="runs-table" style="display:none">
@@ -99,6 +104,55 @@
       }
 
       connect();
+    })();
+
+    // v0.8.0 #3: pagination. "Load more" button fetches the next page
+    // (older runs) using the oldest currently-loaded `started_at` as
+    // the `before` cursor, and appends the new rows. The button hides
+    // itself once the server returns zero rows (no more history).
+    (function () {
+      const name = {{ workflow_name | tojson }};
+      const btn = document.getElementById("load-more-btn");
+      if (!btn) return;  // no runs yet → button not rendered
+      const tbody = document.getElementById("runs-tbody");
+      let loading = false;
+      btn.addEventListener("click", function () {
+        if (loading) return;
+        // Cursor = oldest currently-loaded row's started_at.
+        const rows = tbody ? tbody.querySelectorAll("tr") : [];
+        if (rows.length === 0) return;
+        const oldestTs = rows[rows.length - 1].getAttribute("data-started-at");
+        if (!oldestTs) return;
+        loading = true;
+        btn.disabled = true;
+        btn.textContent = "Loading…";
+        const url = "/dashboard/partials/runs/" + encodeURIComponent(name)
+                    + "?before=" + encodeURIComponent(oldestTs);
+        fetch(url)
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            const trimmed = html.trim();
+            if (!trimmed) {
+              // No more pages — hide the button permanently.
+              btn.style.display = "none";
+              return;
+            }
+            // Append the new rows. The server returns <tr> elements
+            // directly (no <tbody> wrapper), so we can insertAdjacentHTML.
+            if (tbody) tbody.insertAdjacentHTML("beforeend", trimmed);
+            // If we got fewer rows than the default 50, we've hit
+            // the end. (Loose heuristic; the server doesn't signal
+            // "no more" explicitly.)
+            const got = (trimmed.match(/<tr\b/g) || []).length;
+            if (got < 50) btn.style.display = "none";
+          })
+          .catch(function () { /* keep button enabled for retry */ })
+          .finally(function () {
+            loading = false;
+            btn.disabled = false;
+            btn.textContent = "Load more";
+          });
+      });
     })();
   </script>
 {% endblock %}

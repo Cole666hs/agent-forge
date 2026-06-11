@@ -328,7 +328,8 @@ def workflow_detail(request: Request, name: str) -> Response:
 @router.get("/workflows/{name}/runs", response_class=HTMLResponse)
 def workflow_runs(request: Request, name: str) -> Response:
     """Render the runs history page for one workflow. Initial render
-    pre-fills the table; HTMX polls /partials/runs every 5s for updates."""
+    pre-fills the table; WebSocket pushes updates; "load more" button
+    fetches older pages (v0.8.0 #3)."""
     tenant_from_cookie_or_401(request)
     run_store = request.app.state.runs
     runs = run_store.list_runs(name, limit=50)
@@ -340,10 +341,19 @@ def workflow_runs(request: Request, name: str) -> Response:
 
 @router.get("/partials/runs/{name}", response_class=HTMLResponse)
 def partial_runs(request: Request, name: str) -> Response:
-    """HTMX fragment: rendered rows of the runs table for one workflow."""
+    """HTMX/JS fragment: rendered rows of the runs table for one workflow.
+
+    `?before=<started_at>` is the cursor for the next page (v0.8.0 #3).
+    `?limit=N` controls the page size (default 50).
+    """
     tenant_from_cookie_or_401(request)
     run_store = request.app.state.runs
-    runs = run_store.list_runs(name, limit=50)
+    before = request.query_params.get("before")
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    runs = run_store.list_runs(name, limit=limit, before=before)
     templates = request.app.state.templates
     return templates.get_template("_partial_runs_rows.html").render(
         request=request, workflow_name=name, runs=runs,
@@ -470,6 +480,100 @@ async def ws_runs(
         logger.debug("ws_runs[%s]: client disconnected", name)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("ws_runs[%s]: unexpected error: %s", name, e)
+        try:
+            await websocket.close(code=1011, reason="server error")
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# WebSocket overview-quota stream (v0.8.0 #4)
+# ---------------------------------------------------------------------------
+# Replaces the HTMX `every 5s` polling of /partials/usage on the
+# overview page. The server pushes a fresh `quota_status` JSON frame
+# every time a run finishes (or any other quota-changing event fires
+# for the authenticated tenant). Replay-on-reconnect uses the same
+# `?since=` cursor pattern as the runs WS.
+#
+# Authentication, Origin check, and tenant isolation follow the same
+# patterns as the runs WS (see above).
+
+@router.websocket("/ws/overview")
+async def ws_overview(
+    websocket: WebSocket,
+    cookie: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+) -> None:
+    """Stream quota-status updates for the authenticated tenant.
+
+    Each frame: `{"kind": "quota", "tenant_id": str, "plan": str,
+    "used": int, "limit": int|None, "remaining": int|None, "pct":
+    float, "warning": bool, "exceeded": bool}`. First frame is a
+    `hello` with the current `max_seq` of the tenant's quota
+    stream (v0.8.0 #4 convention: workflow key
+    `__tenant_quota__:<tenant_id>`).
+    """
+    # CSRF: same-origin check (see ws_runs for the rationale).
+    origin = websocket.headers.get("origin")
+    if origin is not None:
+        host = websocket.headers.get("host", "")
+        from urllib.parse import urlparse
+        origin_host = urlparse(origin).netloc
+        if not host or origin_host != host:
+            await websocket.close(code=1008, reason="cross-origin not allowed")
+            return
+    # Auth.
+    if not cookie:
+        await websocket.close(code=1008, reason="missing session cookie")
+        return
+    registry = websocket.app.state.tenants
+    usage = websocket.app.state.usage
+    tenant_id = registry.lookup(cookie)
+    if tenant_id is None:
+        await websocket.close(code=1008, reason="invalid session cookie")
+        return
+    await websocket.accept()
+    bus = websocket.app.state.runs.events
+    quota_key = f"__tenant_quota__:{tenant_id}"
+    since = 0
+    try:
+        raw = websocket.query_params.get("since", "0")
+        since = max(0, int(raw))
+    except ValueError:
+        since = 0
+    # Hello frame.
+    try:
+        await websocket.send_text(json.dumps({
+            "kind": "hello",
+            "seq": bus.max_seq(quota_key),
+            "tenant_id": tenant_id,
+        }))
+    except Exception:
+        return
+    try:
+        async for ev in bus.subscribe(quota_key, since=since):
+            if ev.tenant_id and ev.tenant_id != tenant_id:
+                # Shouldn't happen (we subscribed to our own key), but
+                # defense-in-depth: don't leak other tenants' events.
+                continue
+            # Re-compute the quota on each event. One DB read of
+            # tenants + usage, negligible.
+            qs = quota_status(registry, usage, tenant_id)
+            await websocket.send_text(json.dumps({
+                "kind": "quota",
+                "seq": ev.seq,
+                "tenant_id": qs.tenant_id,
+                "plan": qs.plan.value,
+                "used": qs.used,
+                "limit": qs.limit,
+                "remaining": qs.remaining,
+                "pct": qs.pct,
+                "warning": qs.warning,
+                "exceeded": qs.exceeded,
+            }))
+    except WebSocketDisconnect:
+        logger.debug("ws_overview[%s]: client disconnected", tenant_id)
+    except Exception as e:  # pragma: no cover
+        logger.warning("ws_overview[%s]: unexpected error: %s", tenant_id, e)
         try:
             await websocket.close(code=1011, reason="server error")
         except Exception:
