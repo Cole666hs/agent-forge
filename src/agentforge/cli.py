@@ -389,6 +389,108 @@ def tenants_usage(ctx: click.Context, tenant_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# runs — inspect run history from the terminal (v0.9.0)
+# ---------------------------------------------------------------------------
+# Lets a user SSH into a server and look at what's been happening
+# without opening a browser. Two subcommands:
+#
+#   agentforge runs ls <workflow> [--limit N]   ASCII table of recent runs
+#   agentforge runs show <run_id>               Detailed run + event timeline
+#
+# `cancel` is NOT here in v0.9.0 — cancellation is in-process
+# (active_runs lives in the daemon's memory), and the CLI is a
+# separate process. A cross-process cancel would need a DB-backed
+# cancellation queue polled by the daemon; that's v0.10.0 work.
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+@click.pass_context
+def runs(ctx: click.Context) -> None:
+    """Inspect run history from the terminal."""
+    pass
+
+
+@runs.command(name="ls")
+@click.argument("workflow")
+@click.option("--limit", default=20, show_default=True,
+              help="Max number of runs to show.")
+@click.option("--status", default=None,
+              type=click.Choice(["success", "error", "cancelled", "quota_exceeded"], case_sensitive=False),
+              help="Filter by terminal status.")
+@click.pass_context
+def runs_ls(ctx: click.Context, workflow: str, limit: int, status: str | None) -> None:
+    """List recent runs for one workflow (newest first)."""
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
+    try:
+        rows = state.runs.list_runs(workflow, limit=limit * 4)  # over-fetch if filtering
+    finally:
+        state.close()
+    if status is not None:
+        rows = [r for r in rows if r.status == status][:limit]
+    if not rows:
+        click.echo(
+            f"(no runs for workflow {workflow!r}"
+            + (f" with status={status!r}" if status else "")
+            + ")"
+        )
+        return
+    # Compact fixed-width table for terminal use.
+    click.echo(f"{'run_id':<18}  {'agent':<14}  {'status':<14}  {'duration':>10}  started")
+    click.echo("-" * 80)
+    for r in rows:
+        click.echo(
+            f"{r.id:<18}  {r.agent:<14}  {r.status:<14}  "
+            f"{r.duration_seconds:>9.3f}s  {r.started_at}"
+        )
+
+
+@runs.command(name="show")
+@click.argument("run_id")
+@click.pass_context
+def runs_show(ctx: click.Context, run_id: str) -> None:
+    """Show a run record + the full event timeline (newest first)."""
+    import json as _json
+    from agentforge.state import State as AppState
+    state = AppState(ctx.obj["state_db"])
+    try:
+        run = state.runs.get_run(run_id)
+        if run is None:
+            click.echo(f"error: run {run_id!r} not found", err=True)
+            ctx.exit(1)
+            return
+        events = state.runs.events.events_for_run(run_id)
+    finally:
+        state.close()
+    # Run header.
+    error_str = f"\n  error:    {run.error[:200]}" if run.error else ""
+    click.echo(
+        f"run:      {run.id}\n"
+        f"workflow: {run.workflow}\n"
+        f"agent:    {run.agent}\n"
+        f"status:   {run.status}\n"
+        f"started:  {run.started_at}\n"
+        f"ended:    {run.ended_at}\n"
+        f"duration: {run.duration_seconds:.3f}s"
+        f"{error_str}"
+    )
+    if not events:
+        click.echo(
+            "\n(no events recorded for this run — the event log was "
+            "added in v0.7.0; older runs have no events)"
+        )
+        return
+    click.echo(f"\nevent timeline ({len(events)} events):")
+    for ev in events:
+        # Compact one-line summary per event, payload as JSON on the next
+        # line. Easy to scan in the terminal, easy to grep.
+        click.echo(f"  #{ev.seq:>5}  {ev.ts}  {ev.kind}")
+        if ev.payload:
+            click.echo("           payload: " + _json.dumps(ev.payload, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
 # serve
 # ---------------------------------------------------------------------------
 

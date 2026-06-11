@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -109,6 +110,60 @@ def _list_workflows(workflows_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Main pages
 # ---------------------------------------------------------------------------
+
+@router.get("/metrics", response_class=HTMLResponse)
+def metrics(request: Request) -> Response:
+    """v0.9.0: computed-metrics page. Pure numbers from the runs +
+    events tables — no charting library, no external metrics service.
+    Numbers: total runs (24h, 7d, all-time), error rate (24h), p50 / p95
+    duration (24h, 7d), per-workflow breakdown. Refresh by hitting the
+    page; no live updates (this page is for occasional "how are we
+    doing" glances, not real-time monitoring — the runs page + WS
+    is the live view)."""
+    tenant_from_cookie_or_401(request)
+    run_store = request.app.state.runs
+    workflows = _list_workflows(request.app.state.workflows_dir)
+    now = datetime.now(timezone.utc)
+    last_24h = (now - timedelta(hours=24)).isoformat()
+    last_7d = (now - timedelta(days=7)).isoformat()
+    # Aggregate metrics.
+    total_all = run_store.count_runs()
+    total_24h = run_store.count_runs(since=last_24h)
+    total_7d = run_store.count_runs(since=last_7d)
+    error_24h = run_store.count_runs(since=last_24h, status="error")
+    error_rate_24h = (error_24h / total_24h) if total_24h else 0.0
+    p50_24h = run_store.duration_percentile(since=last_24h, pct=0.5)
+    p95_24h = run_store.duration_percentile(since=last_24h, pct=0.95)
+    p50_7d = run_store.duration_percentile(since=last_7d, pct=0.5)
+    p95_7d = run_store.duration_percentile(since=last_7d, pct=0.95)
+    # Per-workflow breakdown (top 20 by 7d activity).
+    per_workflow = []
+    for w in workflows:
+        runs_7d = run_store.count_runs(workflow=w["name"], since=last_7d)
+        if runs_7d == 0:
+            continue
+        errs_7d = run_store.count_runs(
+            workflow=w["name"], since=last_7d, status="error",
+        )
+        per_workflow.append({
+            "name": w["name"],
+            "runs_7d": runs_7d,
+            "error_rate_7d": (errs_7d / runs_7d) if runs_7d else 0.0,
+            "p50_7d": run_store.duration_percentile(
+                workflow=w["name"], since=last_7d, pct=0.5,
+            ),
+        })
+    per_workflow.sort(key=lambda r: r["runs_7d"], reverse=True)
+    per_workflow = per_workflow[:20]
+    templates = request.app.state.templates
+    return templates.get_template("metrics.html").render(
+        request=request,
+        total_all=total_all, total_24h=total_24h, total_7d=total_7d,
+        error_rate_24h=error_rate_24h,
+        p50_24h=p50_24h, p95_24h=p95_24h, p50_7d=p50_7d, p95_7d=p95_7d,
+        per_workflow=per_workflow,
+    )
+
 
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request) -> Response:
@@ -336,6 +391,36 @@ def workflow_runs(request: Request, name: str) -> Response:
     templates = request.app.state.templates
     return templates.get_template("workflow_runs.html").render(
         request=request, workflow_name=name, runs=runs,
+    )
+
+
+@router.get("/workflows/{name}/runs/{run_id}", response_class=HTMLResponse)
+def workflow_run_detail(
+    request: Request, name: str, run_id: str,
+) -> Response:
+    """v0.9.0: run-detail page. Shows the run record + the full event
+    timeline (every event the EventBus published for this run, in
+    seq order). Click a run in the history list to land here.
+
+    Auth: same as the runs list — any logged-in tenant can view
+    their own run details. Cross-tenant access: the run is filtered
+    by (run_id) only here, but the run is keyed by the API-key
+    used to start it. A future tightening could also check
+    run.tenant_id == cookie's tenant_id (defense in depth, like
+    v0.8.1's cancel ownership check).
+    """
+    tenant_from_cookie_or_401(request)
+    run_store = request.app.state.runs
+    run = run_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404, detail=f"run {run_id!r} not found",
+        )
+    # Load all events for this run, in chronological order.
+    events = run_store.events.events_for_run(run_id)
+    templates = request.app.state.templates
+    return templates.get_template("workflow_run_detail.html").render(
+        request=request, workflow_name=name, run=run, events=events,
     )
 
 

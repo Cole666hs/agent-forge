@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }} — agentforge{% endblock %}
+{% block content %}
+  <h1>Run <code>{{ run.id }}</code></h1>
+  <p>
+    <a href="/dashboard/workflows/{{ workflow_name }}/runs">← {{ workflow_name }}</a>
+  </p>
+
+  <div class="card">
+    <h2>Run info</h2>
+    <table>
+      <tr>
+        <th>ID</th>
+        <td><code>{{ run.id }}</code></td>
+      </tr>
+      <tr>
+        <th>Workflow</th>
+        <td><a href="/dashboard/workflows/{{ workflow_name }}">{{ workflow_name }}</a></td>
+      </tr>
+      <tr>
+        <th>Agent</th>
+        <td>{{ run.agent }}</td>
+      </tr>
+      <tr>
+        <th>Status</th>
+        <td>
+          <span class="badge" style="
+            background:
+              {% if run.status == 'success' %}var(--ok-bg); color: var(--ok)
+              {% elif run.status == 'error' %}var(--error-bg); color: var(--error)
+              {% elif run.status == 'cancelled' %}var(--warning-bg); color: var(--warning)
+              {% else %}#e5e7eb; color: var(--text){% endif %};
+          ">{{ run.status }}</span>
+        </td>
+      </tr>
+      <tr>
+        <th>Started</th>
+        <td class="muted">{{ run.started_at }}</td>
+      </tr>
+      <tr>
+        <th>Ended</th>
+        <td class="muted">{{ run.ended_at }}</td>
+      </tr>
+      <tr>
+        <th>Duration</th>
+        <td>{{ "%.3f"|format(run.duration_seconds) }}s</td>
+      </tr>
+      {% if run.error %}
+      <tr>
+        <th>Error</th>
+        <td class="muted">{{ run.error[:200] }}</td>
+      </tr>
+      {% endif %}
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Event timeline ({{ events|length }} events)</h2>
+    {% if events %}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Kind</th>
+            <th>Timestamp</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ev in events %}
+            <tr>
+              <td><code>{{ ev.seq }}</code></td>
+              <td>
+                <span class="badge" style="
+                  background:
+                    {% if ev.kind == 'started' %}var(--ok-bg); color: var(--ok)
+                    {% elif ev.kind == 'finished' %}var(--ok-bg); color: var(--ok)
+                    {% elif ev.kind == 'failed' %}var(--error-bg); color: var(--error)
+                    {% elif ev.kind == 'cancelled' %}var(--warning-bg); color: var(--warning)
+                    {% else %}#e5e7eb; color: var(--text){% endif %};
+                ">{{ ev.kind }}</span>
+              </td>
+              <td class="muted">{{ ev.ts }}</td>
+              <td><code class="muted" style="word-break: break-all;">{{ ev.payload | tojson(indent=2) }}</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No events recorded for this run. (The run may have completed before the event log was added in v0.7.0.)</p>
+    {% endif %}
+  </div>
+{% endblock %}

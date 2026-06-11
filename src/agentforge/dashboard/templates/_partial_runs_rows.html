@@ -4,9 +4,10 @@
    quota_exceeded=yellow, anything else=gray. #}
 {% for r in runs %}
 {# v0.8.0 #3: data-started-at is the cursor for "load more" pagination.
-   The dashboard JS reads it from the last <tr> in the tbody. #}
+   The dashboard JS reads it from the last <tr> in the tbody.
+   v0.9.0: the ID cell is a link to the run-detail page. #}
 <tr data-started-at="{{ r.started_at }}">
-  <td><code>{{ r.id }}</code></td>
+  <td><code><a href="/dashboard/workflows/{{ workflow_name|default('')|e }}/runs/{{ r.id }}">{{ r.id }}</a></code></td>
   <td>{{ r.agent }}</td>
   <td>
     <span class="badge" style="

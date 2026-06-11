@@ -424,6 +424,81 @@ class SQLiteRunStore:
             cur = conn.execute(sql, tuple(params))
             return [RunRecord(**dict(row)) for row in cur.fetchall()]
 
+    def get_run(self, run_id: str) -> Optional[RunRecord]:
+        """Look up a single run by id. Returns None if not found.
+        v0.9.0: used by the run-detail page."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT id, workflow, tenant_id, agent, started_at, ended_at, "
+                "status, duration_seconds, error FROM runs WHERE id = ?",
+                (run_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return RunRecord(**dict(row))
+
+    def count_runs(self, workflow: Optional[str] = None,
+                   since: Optional[str] = None,
+                   status: Optional[str] = None) -> int:
+        """Count runs matching the optional filters. v0.9.0: used by
+        the metrics page. since is an ISO 8601 lower bound on started_at.
+        status filters by exact match (success|error|cancelled|...)."""
+        sql = "SELECT COUNT(*) FROM runs WHERE 1=1"
+        params: list = []
+        if workflow is not None:
+            sql += " AND workflow = ?"
+            params.append(workflow)
+        if since is not None:
+            sql += " AND started_at >= ?"
+            params.append(since)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        with self._state._tx() as conn:
+            cur = conn.execute(sql, tuple(params))
+            (n,) = cur.fetchone()
+        return int(n)
+
+    def duration_percentile(self, workflow: Optional[str] = None,
+                            since: Optional[str] = None,
+                            pct: float = 0.5) -> Optional[float]:
+        """Return the p<pct> of run duration_seconds for runs matching
+        the filters. Returns None if no matching runs. v0.9.0: used
+        by the metrics page.
+
+        SQLite has no native percentile aggregate, so we read the
+        durations into Python and use statistics.quantiles. For the
+        small N typical of a dashboard's recent-runs query (last 24h
+        or so, hundreds of runs), this is fine. If the user is looking
+        at all-time stats with millions of runs, this would need to
+        be replaced with a streaming percentile or a histogram-based
+        approximation — not a current concern.
+        """
+        sql = "SELECT duration_seconds FROM runs WHERE 1=1"
+        params: list = []
+        if workflow is not None:
+            sql += " AND workflow = ?"
+            params.append(workflow)
+        if since is not None:
+            sql += " AND started_at >= ?"
+            params.append(since)
+        with self._state._tx() as conn:
+            cur = conn.execute(sql, tuple(params))
+            durations = [float(r[0]) for r in cur.fetchall()]
+        if not durations:
+            return None
+        # statistics.quantiles is the cleanest way; n=100 means cut into
+        # 100 equal groups, then pick the (pct * 100)th cut point.
+        if len(durations) == 1:
+            return durations[0]
+        import statistics
+        # n=100 gives 99 cut points; we want the (pct * 100)th.
+        # quantiles returns cuts, not a single value, so pick the right index.
+        cuts = statistics.quantiles(durations, n=100, method="inclusive")
+        idx = max(0, min(len(cuts) - 1, int(pct * 100) - 1))
+        return cuts[idx]
+
 
 # ---------------------------------------------------------------------------
 # JSON → SQLite migration
@@ -621,6 +696,28 @@ class EventBus:
             )
             (m,) = cur.fetchone()
         return int(m)
+
+    def events_for_run(self, run_id: str) -> List[RunEvent]:
+        """All events for one run, ordered by seq ASC. Used by the
+        v0.9.0 run-detail page: click a run in the history list, see
+        every step (started, each step's side-effects, finished/
+        failed/cancelled) in order."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT seq, run_id, workflow, tenant_id, kind, payload, ts "
+                "FROM run_events WHERE run_id = ? ORDER BY seq ASC",
+                (run_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            RunEvent(
+                seq=int(r["seq"]), run_id=r["run_id"],
+                workflow=r["workflow"], tenant_id=r["tenant_id"],
+                kind=r["kind"], payload=json.loads(r["payload"] or "{}"),
+                ts=r["ts"],
+            )
+            for r in rows
+        ]
 
     async def subscribe(self, workflow: str, since: int = 0) -> AsyncIterator[RunEvent]:
         """Yield a live stream of RunEvent for one workflow.

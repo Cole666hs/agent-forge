@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Metrics — agentforge{% endblock %}
+{% block content %}
+  <h1>Metrics</h1>
+  <p class="muted">Computed from the runs + events tables. Refresh to update.</p>
+
+  <div class="grid">
+    <div class="metric">
+      <div class="label">Runs (24h)</div>
+      <div class="value">{{ total_24h }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Runs (7d)</div>
+      <div class="value">{{ total_7d }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Runs (all-time)</div>
+      <div class="value">{{ total_all }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Error rate (24h)</div>
+      <div class="value">
+        {% if total_24h %}{{ "%.1f"|format(error_rate_24h * 100) }}%
+        {% else %}-{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Duration percentiles</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Window</th>
+          <th>p50</th>
+          <th>p95</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>last 24h</td>
+          <td>{% if p50_24h is not none %}{{ "%.3f"|format(p50_24h) }}s{% else %}-{% endif %}</td>
+          <td>{% if p95_24h is not none %}{{ "%.3f"|format(p95_24h) }}s{% else %}-{% endif %}</td>
+        </tr>
+        <tr>
+          <td>last 7d</td>
+          <td>{% if p50_7d is not none %}{{ "%.3f"|format(p50_7d) }}s{% else %}-{% endif %}</td>
+          <td>{% if p95_7d is not none %}{{ "%.3f"|format(p95_7d) }}s{% else %}-{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Per-workflow (last 7d, top 20)</h2>
+    {% if per_workflow %}
+      <table>
+        <thead>
+          <tr>
+            <th>Workflow</th>
+            <th>Runs (7d)</th>
+            <th>Error rate</th>
+            <th>p50</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for w in per_workflow %}
+            <tr>
+              <td><a href="/dashboard/workflows/{{ w.name }}">{{ w.name }}</a></td>
+              <td>{{ w.runs_7d }}</td>
+              <td>
+                {% if w.error_rate_7d %}{{ "%.1f"|format(w.error_rate_7d * 100) }}%
+                {% else %}-{% endif %}
+              </td>
+              <td>
+                {% if w.p50_7d is not none %}{{ "%.3f"|format(w.p50_7d) }}s{% else %}-{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No workflow activity in the last 7 days.</p>
+    {% endif %}
+  </div>
+{% endblock %}
