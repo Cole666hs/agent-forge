@@ -1,0 +1,9 @@
+name: tenant-demo
+description: Single LLM call. Bumps the tenant's monthly token usage.
+steps:
+  - id: generate
+    type: llm_call
+    inputs:
+      system: "You are a concise assistant."
+      user: "{{ inputs.prompt }}"
+      output_key: reply

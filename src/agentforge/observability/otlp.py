@@ -8,7 +8,6 @@ Schema reference: https://opentelemetry.io/docs/specs/otlp/#metrics-request
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time

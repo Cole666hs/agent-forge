@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from agentforge.billing.plans import Plan, PLAN_LIMITS
-from agentforge.billing.usage import TokenUsage, UsageStore
+from agentforge.billing.usage import UsageStore
 from agentforge.tenants.registry import TenantRegistry
 
 

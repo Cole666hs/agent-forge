@@ -1,0 +1,17 @@
+name: telegram-echo
+description: Reply to a Telegram message via a single LLM call.
+steps:
+  - id: receive
+    type: receive
+    inputs: {}
+  - id: generate
+    type: llm_call
+    inputs:
+      system: "You are a friendly assistant. Be brief."
+      user: "{{ receive.content }}"
+      output_key: reply
+  - id: respond
+    type: respond
+    inputs:
+      to: "{{ receive.from }}"
+      content: "{{ reply }}"

@@ -66,7 +66,8 @@ class TenantRegistry:
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write — same pattern as mailbox_client.
-        import os, tempfile
+        import os
+        import tempfile
         fd, tmp = tempfile.mkstemp(
             dir=str(self.path.parent),
             prefix=f".{self.path.name}.",

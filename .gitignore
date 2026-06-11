@@ -1,10 +1,21 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-*.egg-info/
-.venv/
-venv/
-dist/
 build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.venv/
 .coverage
 htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Example runtime artifacts (re-created on every run)
+examples/*/mailbox/
+examples/*/state.db
+examples/*/data/

@@ -1,0 +1,8 @@
+name: hello
+description: Echo the inbound message back as a record. No LLM required.
+steps:
+  - id: capture
+    type: record
+    inputs:
+      output_key: echo
+      message: "{{ inputs.text }}"

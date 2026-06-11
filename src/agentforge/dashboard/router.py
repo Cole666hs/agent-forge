@@ -131,7 +131,8 @@ def tenants_create(
     request: Request,
     tenant_id: str = Form(...),
 ) -> Response:
-    auth_tenant = tenant_from_cookie_or_401(request)
+    # Auth gate — call for side effect (raises 401 if cookie invalid)
+    tenant_from_cookie_or_401(request)
     registry = request.app.state.tenants
     api_key = registry.add(tenant_id)
     return RedirectResponse(
@@ -142,7 +143,8 @@ def tenants_create(
 
 @router.post("/tenants/{tenant_id}/delete")
 def tenants_delete(request: Request, tenant_id: str) -> Response:
-    auth_tenant = tenant_from_cookie_or_401(request)
+    # Auth gate — call for side effect (raises 401 if cookie invalid)
+    tenant_from_cookie_or_401(request)
     registry = request.app.state.tenants
     registry.remove(tenant_id)
     return RedirectResponse(url="/dashboard/tenants", status_code=status.HTTP_303_SEE_OTHER)
@@ -168,7 +170,8 @@ def tenant_set_plan(
     tenant_id: str,
     plan: str = Form(...),
 ) -> Response:
-    auth_tenant = tenant_from_cookie_or_401(request)
+    # Auth gate — call for side effect (raises 401 if cookie invalid)
+    tenant_from_cookie_or_401(request)
     registry = request.app.state.tenants
     if plan not in ("free", "pro", "enterprise"):
         raise HTTPException(status_code=400, detail=f"invalid plan {plan!r}")

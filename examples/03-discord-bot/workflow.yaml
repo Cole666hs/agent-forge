@@ -1,0 +1,17 @@
+name: discord-echo
+description: Reply to a Discord message via a single LLM call.
+steps:
+  - id: receive
+    type: receive
+    inputs: {}
+  - id: generate
+    type: llm_call
+    inputs:
+      system: "You are a friendly Discord assistant. Be brief and casual."
+      user: "{{ receive.content }}"
+      output_key: reply
+  - id: respond
+    type: respond
+    inputs:
+      to: "{{ receive.from }}"
+      content: "{{ reply }}"

@@ -1,0 +1,12 @@
+name: webhook-echo
+description: Receive a webhook payload and ack it. Replace the receive step
+  with real processing (llm_call, persist, etc.) for your use case.
+steps:
+  - id: receive
+    type: receive
+    inputs: {}
+  - id: respond
+    type: respond
+    inputs:
+      to: "{{ receive.from }}"
+      content: "ok: {{ receive.content[:200] }}"

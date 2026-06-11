@@ -14,7 +14,6 @@ runs in production is launched via `agentforge run`. The library code
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -123,9 +122,9 @@ def init(name: str) -> None:
         encoding="utf-8",
     )
     click.echo(f"created {name}/")
-    click.echo(f"  workflow.yaml  - edit this to define your agent")
-    click.echo(f"  .env.example   - copy to .env and fill in secrets")
-    click.echo(f"  .gitignore     - keeps state out of git")
+    click.echo("  workflow.yaml  - edit this to define your agent")
+    click.echo("  .env.example   - copy to .env and fill in secrets")
+    click.echo("  .gitignore     - keeps state out of git")
     click.echo(f"\nnext: cd {name} && agentforge run workflow.yaml --agent mybot")
 
 
