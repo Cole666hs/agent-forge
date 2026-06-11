@@ -1,9 +1,23 @@
 """FastAPI router for the dashboard UI. Side-effect-free at import time."""
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, Form, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from agentforge.billing.plans import Plan
@@ -15,6 +29,8 @@ from agentforge.dashboard.auth import (
     get_registry,
     tenant_from_cookie_or_401,
 )
+
+logger = logging.getLogger("agentforge.dashboard.ws")
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -332,6 +348,96 @@ def partial_runs(request: Request, name: str) -> Response:
     return templates.get_template("_partial_runs_rows.html").render(
         request=request, workflow_name=name, runs=runs,
     )
+
+
+# ---------------------------------------------------------------------------
+# WebSocket run event stream (v0.7.0)
+# ---------------------------------------------------------------------------
+# Replaces the HTMX `every 5s` polling on the runs page. The server
+# pushes a JSON message for every run event the EventBus sees for this
+# workflow. Clients reconnect with `?since=<seq>` and the server
+# replays missed events from the run_events table before going live.
+#
+# Backpressure: the underlying TCP/ASGI buffer is the only
+# throttling. We send every event as it arrives. If the client falls
+# behind, the kernel TCP buffer absorbs a small burst, then the
+# WebSocket close-on-write-timeout kicks in (uvicorn default 10s).
+# Coalescing events at 100ms intervals would add complexity for
+# marginal value on a dashboard that already pre-renders the last
+# 50 runs server-side.
+#
+# Auth: WebSockets can't carry arbitrary headers from the browser,
+# so we authenticate by reading the session cookie directly. The
+# same `tenant_from_cookie_or_401` helper is reused — if the cookie
+# is missing or the API key doesn't resolve to a tenant, we close
+# with code 1008 (policy violation) before accepting.
+
+@router.websocket("/ws/runs/{name}")
+async def ws_runs(
+    websocket: WebSocket,
+    name: str,
+    cookie: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+) -> None:
+    """Stream run events for one workflow as JSON text frames.
+
+    Each frame: `{"seq": int, "run_id": str, "kind": str, "payload":
+    {...}, "ts": "ISO8601"}`. The first frame is always a `hello`
+    message that includes the current `max_seq` so the client can
+    decide whether to reconnect-with-replay on disconnect.
+    """
+    # Auth via cookie. Reject before accept() so unauthorized clients
+    # get a clean 1008 close (not a half-open socket).
+    if not cookie:
+        await websocket.close(code=1008, reason="missing session cookie")
+        return
+    registry = websocket.app.state.tenants
+    tenant_id = registry.lookup(cookie)
+    if tenant_id is None:
+        await websocket.close(code=1008, reason="invalid session cookie")
+        return
+    await websocket.accept()
+    bus = websocket.app.state.runs.events
+    # `since` query param: client tells us the last seq it saw, server
+    # replays any events with seq > since before going live. Default 0
+    # (replay everything for this workflow).
+    since = 0
+    try:
+        raw = websocket.query_params.get("since", "0")
+        since = max(0, int(raw))
+    except ValueError:
+        since = 0
+    # First frame: hello with the current max_seq, so the client can
+    # reconnect-with-replay correctly even if the bus is empty.
+    try:
+        await websocket.send_text(json.dumps({
+            "kind": "hello",
+            "seq": bus.max_seq(name),
+            "workflow": name,
+        }))
+    except Exception:
+        return
+    # Drain replay + live. We loop manually so we can stop on
+    # WebSocketDisconnect; an `async for` would also work but the
+    # try/except is more explicit about the disconnect path.
+    try:
+        async for ev in bus.subscribe(name, since=since):
+            await websocket.send_text(json.dumps({
+                "kind": ev.kind,
+                "seq": ev.seq,
+                "run_id": ev.run_id,
+                "payload": ev.payload,
+                "ts": ev.ts,
+            }))
+    except WebSocketDisconnect:
+        # Client closed cleanly. The bus.subscribe() finally block
+        # already removed our queue from the subscribers list.
+        logger.debug("ws_runs[%s]: client disconnected", name)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("ws_runs[%s]: unexpected error: %s", name, e)
+        try:
+            await websocket.close(code=1011, reason="server error")
+        except Exception:
+            pass
 
 
 @router.get("/workflows/{name}/edit", response_class=HTMLResponse)

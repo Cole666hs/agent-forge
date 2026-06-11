@@ -97,7 +97,7 @@ def create_app(
     state_db = Path(state_db) if state_db is not None else mailbox_root.parent / "state.db"
     workflows_dir = Path(workflows_dir) if workflows_dir is not None else mailbox_root.parent / "workflows"
 
-    app = FastAPI(title="agentforge", version="0.6.0")
+    app = FastAPI(title="agentforge", version="0.7.0")
     # SQLite-backed state (v0.6.0). One State object, three handles
     # (tenants, usage, runs) all sharing one connection + one lock.
     # Falls back to the JSON files if state_db is explicitly None.
@@ -273,6 +273,12 @@ def create_app(
         started_at = datetime.now(timezone.utc).isoformat()
         error_msg: str | None = None
         status_label = "success"
+        # v0.7.0: emit a 'started' event so dashboard subscribers see
+        # the run appear in real time (vs the old 5s HTMX polling).
+        run_store.events.publish(
+            run_id=run_id, workflow=name, tenant_id=tenant_id,
+            kind="started", payload={"agent": body.agent},
+        )
         try:
             await wf.run(state=state, mailbox=mbox, llm=None,
                          agent_name=body.agent, state_db=state_db)
@@ -324,6 +330,20 @@ def create_app(
                     ))
                 except Exception:
                     pass  # don't fail the request if history write fails
+                # v0.7.0: emit a terminal event. Subscribers use this to
+                # replace the in-flight row with the final status.
+                try:
+                    run_store.events.publish(
+                        run_id=run_id, workflow=name, tenant_id=tenant_id,
+                        kind="finished" if status_label == "success" else "failed",
+                        payload={
+                            "status": status_label,
+                            "duration_seconds": duration,
+                            "error": error_msg,
+                        },
+                    )
+                except Exception:
+                    pass
         return RunWorkflowResponse(state_keys=sorted(state._data.keys()))
 
     # Wrap the whole ASGI stack with RequestIdMiddleware. Starlette runs
@@ -356,7 +376,7 @@ def create_app(
         from agentforge.observability.otlp import OtlpExporter
         app.state.otlp_exporter = OtlpExporter(
             endpoint=_otlp_endpoint, registry=get_registry(),
-            service_name="agentforge", service_version="0.5.5",
+            service_name="agentforge", service_version="0.7.0",
         )
         app.state.otlp_exporter.start()
 

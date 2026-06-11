@@ -56,7 +56,7 @@ from agentforge.core.runs import RunRecord  # re-export for callers
 
 logger = logging.getLogger("agentforge.state")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Default per-workflow run cap — matches RunStore default.
 DEFAULT_MAX_RUNS_PER_WORKFLOW = 100
@@ -114,8 +114,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS runs_by_workflow
             ON runs(workflow, started_at DESC);
+        CREATE TABLE IF NOT EXISTS run_events (
+            seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id    TEXT NOT NULL,
+            workflow  TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            kind      TEXT NOT NULL,
+            payload   TEXT NOT NULL DEFAULT '{}',
+            ts        TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS run_events_by_workflow_seq
+            ON run_events(workflow, seq);
     """)
-    # Set user_version if it isn't already at SCHEMA_VERSION.
+    # Set user_version if it isn't already at SCHEMA_VERSION. Bump the
+    # version when adding migrations; add the migration block to
+    # `migrate()` below (currently a no-op stub because v0.6.0 = schema
+    # v1 and v0.7.0 only adds the run_events table idempotently).
     cur = conn.execute("PRAGMA user_version")
     (current,) = cur.fetchone()
     if current < SCHEMA_VERSION:
@@ -149,6 +163,7 @@ class State:
         self.tenants = SQLiteTenantRegistry(self)
         self.usage = SQLiteUsageStore(self)
         self.runs = SQLiteRunStore(self)
+        self.events = EventBus(self)
         logger.info("state: opened %s (schema v%d)", self.db_path, SCHEMA_VERSION)
 
     def close(self) -> None:
@@ -343,6 +358,14 @@ class SQLiteRunStore:
         self._state = state
         self.max_per_workflow = max_per_workflow
 
+    @property
+    def events(self) -> "EventBus":
+        """Live-event bus for run lifecycle. Backed by the run_events
+        table on the same State. Exposed here because `run_store.events`
+        is the natural place to look when you have a run handle but no
+        direct reference to the State container."""
+        return self._state.events
+
     def record(self, run: RunRecord) -> None:
         with self._state._tx() as conn:
             conn.execute(
@@ -464,3 +487,151 @@ def migrate_json_to_sqlite(
             report["tenants"], report["usage"], report["runs"], report["skipped"],
         )
     return report
+
+
+# ---------------------------------------------------------------------------
+# EventBus (v0.7.0)
+# ---------------------------------------------------------------------------
+# Append-only event log for workflow runs. Two consumers:
+#   1. Replay: a WebSocket client that reconnects with `?since=<seq>`
+#      back-fills the events it missed by reading the run_events table.
+#   2. Live: an in-process list of asyncio.Queue subscribers gets notified
+#      synchronously when `publish()` runs. Each subscriber sees events
+#      for one workflow only (filtered by the queue's `_workflow` attr).
+#
+# The DB is the source of truth; in-process queues are a delivery
+# optimization for the current process. A subscriber that disconnects
+# loses nothing durable — it just re-subscribes with `since=<last_seq>`.
+
+import asyncio
+from dataclasses import dataclass
+from typing import AsyncIterator, List
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    """One row in the run_events table. `payload` is JSON-decoded on read."""
+    seq: int
+    run_id: str
+    workflow: str
+    tenant_id: str
+    kind: str
+    payload: dict
+    ts: str
+
+
+class EventBus:
+    """In-process pub/sub for run events, backed by the run_events table.
+
+    `publish()` writes to SQLite (so a future subscriber can replay it)
+    and then fans out to all current subscribers of the workflow.
+
+    `subscribe()` returns an async iterator that yields a snapshot of
+    every event for the workflow with seq > `since`, then blocks on
+    new live events until the consumer stops iterating (or the
+    connection is closed via `aclose()`).
+    """
+
+    def __init__(self, state: "State"):
+        self._state = state
+        self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._lock = threading.RLock()
+
+    def publish(
+        self,
+        run_id: str,
+        workflow: str,
+        tenant_id: str,
+        kind: str,
+        payload: Optional[dict] = None,
+    ) -> int:
+        """Append one event. Returns its seq number (monotonic per-DB)."""
+        if payload is None:
+            payload = {}
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO run_events(run_id, workflow, tenant_id, kind, payload, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, workflow, tenant_id, kind, json.dumps(payload), ts),
+            )
+            seq = int(cur.lastrowid or 0)
+        # Notify current subscribers. We copy the list under lock so a
+        # subscriber that disconnects mid-fan-out doesn't break the
+        # iteration.
+        with self._lock:
+            queues = list(self._subscribers.get(workflow, ()))
+        for q in queues:
+            try:
+                q.put_nowait((seq, run_id, kind, payload, ts))
+            except asyncio.QueueFull:  # pragma: no cover — bounded queue
+                pass
+        return seq
+
+    def events_since(self, workflow: str, since: int) -> List[RunEvent]:
+        """Replay events for one workflow with seq > since, ordered by seq."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT seq, run_id, workflow, tenant_id, kind, payload, ts "
+                "FROM run_events WHERE workflow = ? AND seq > ? "
+                "ORDER BY seq ASC",
+                (workflow, since),
+            )
+            rows = cur.fetchall()
+        return [
+            RunEvent(
+                seq=int(r["seq"]), run_id=r["run_id"],
+                workflow=r["workflow"], tenant_id=r["tenant_id"],
+                kind=r["kind"], payload=json.loads(r["payload"] or "{}"),
+                ts=r["ts"],
+            )
+            for r in rows
+        ]
+
+    def max_seq(self, workflow: str) -> int:
+        """Highest seq seen for this workflow, or 0 if no events yet."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE workflow = ?",
+                (workflow,),
+            )
+            (m,) = cur.fetchone()
+        return int(m)
+
+    async def subscribe(self, workflow: str, since: int = 0) -> AsyncIterator[RunEvent]:
+        """Yield a live stream of RunEvent for one workflow.
+
+        On entry: drains the table for seq > since. Then waits for new
+        events published after subscribe() was called. Closes cleanly
+        via aclose() on the returned async iterator (use `async with`
+        or call `await aclose()` explicitly).
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
+        with self._lock:
+            self._subscribers.setdefault(workflow, []).append(queue)
+        try:
+            # Replay backlog first (no yield, no throttle). The caller
+            # has already received these via the pre-render so most
+            # reconnects will have an empty backlog.
+            for ev in self.events_since(workflow, since):
+                yield ev
+            # Live events. Block on the queue; the publish() call wakes
+            # us up. If the queue is closed (a different code path
+            # closes it) the CancelledError escapes and the iterator
+            # terminates.
+            while True:
+                seq, run_id, kind, payload, ts = await queue.get()
+                yield RunEvent(
+                    seq=seq, run_id=run_id, workflow=workflow,
+                    # tenant_id not delivered through the queue (not
+                    # needed by the dashboard); fall back to empty.
+                    tenant_id="",
+                    kind=kind, payload=payload, ts=ts,
+                )
+        finally:
+            with self._lock:
+                subs = self._subscribers.get(workflow, [])
+                if queue in subs:
+                    subs.remove(queue)
+                if not subs:
+                    self._subscribers.pop(workflow, None)

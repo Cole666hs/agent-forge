@@ -3,11 +3,9 @@
 {% block content %}
   <h1>Runs: {{ workflow_name }}</h1>
   <p><a href="/dashboard/workflows/{{ workflow_name }}">← {{ workflow_name }}</a></p>
+  <p class="muted"><span id="ws-status">connecting…</span></p>
 
-  <div class="card"
-       hx-get="/dashboard/partials/runs/{{ workflow_name }}"
-       hx-trigger="every 5s"
-       hx-swap="innerHTML">
+  <div class="card" id="runs-card">
     <h2>Run history</h2>
     {% if runs %}
       <table>
@@ -21,14 +19,82 @@
             <th>Error</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="runs-tbody">
           {% for r in runs %}
             {% include "_partial_runs_rows.html" %}
           {% endfor %}
         </tbody>
       </table>
     {% else %}
-      <p class="muted">No runs yet for <code>{{ workflow_name }}</code>. The first run shows up here within 5s of starting.</p>
+      <p class="muted" id="runs-empty">No runs yet for <code>{{ workflow_name }}</code>. The first run shows up here in real time.</p>
+      <table id="runs-table" style="display:none">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Agent</th>
+            <th>Status</th>
+            <th>Duration</th>
+            <th>Started</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
     {% endif %}
   </div>
+
+  {# v0.7.0: WebSocket-based run event stream. Replaces the old
+     `hx-get`/`hx-trigger="every 5s"` polling. On every event from
+     the server we refresh the rows partial via plain fetch. The
+     hello frame's `seq` becomes the `since` query param on reconnect
+     so we don't miss events that fired while we were gone. #}
+  <script>
+    (function () {
+      const name = {{ workflow_name | tojson }};
+      const statusEl = document.getElementById("ws-status");
+      const tbody = document.getElementById("runs-tbody");
+      const empty = document.getElementById("runs-empty");
+      const table = document.getElementById("runs-table");
+      let lastSeq = 0;
+      let backoff = 500;
+
+      function setStatus(text) { if (statusEl) statusEl.textContent = text; }
+
+      function refreshRows() {
+        return fetch("/dashboard/partials/runs/" + encodeURIComponent(name))
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            if (!tbody) return;
+            tbody.innerHTML = html;
+            // Reveal the table the first time we get data.
+            if (empty && table) { empty.style.display = "none"; table.style.display = ""; }
+          });
+      }
+
+      function connect() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const url = proto + "//" + location.host + "/dashboard/ws/runs/"
+                    + encodeURIComponent(name) + "?since=" + lastSeq;
+        setStatus("connecting…");
+        const ws = new WebSocket(url);
+        ws.onopen = function () { backoff = 500; setStatus("live"); };
+        ws.onmessage = function (msg) {
+          let ev;
+          try { ev = JSON.parse(msg.data); } catch (e) { return; }
+          if (typeof ev.seq === "number") lastSeq = Math.max(lastSeq, ev.seq);
+          if (ev.kind === "hello") return;  // pure ack
+          // started / finished / failed → refresh from the source of truth.
+          refreshRows();
+        };
+        ws.onclose = function () {
+          setStatus("reconnecting in " + Math.round(backoff / 100) / 10 + "s…");
+          setTimeout(connect, backoff);
+          backoff = Math.min(backoff * 2, 5000);
+        };
+        ws.onerror = function () { try { ws.close(); } catch (e) {} };
+      }
+
+      connect();
+    })();
+  </script>
 {% endblock %}
