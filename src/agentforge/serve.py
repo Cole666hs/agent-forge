@@ -305,11 +305,25 @@ def create_app(
             # another tenant's run_id, they can't cancel it. The
             # practical exposure is low (run_id is 12 hex of UUID4,
             # 48 bits of entropy) but the check is one string-compare.
+            # v0.8.1 (from HAMILLER review): audit the attempt — a
+            # tenant trying to cancel someone else's run is a
+            # security signal worth logging even though the request
+            # is rejected. Helpful for detecting probing or
+            # compromised credentials.
+            logger.warning(
+                "ws_runs cancel: tenant %r tried to cancel run %r owned by %r",
+                tenant_id, run_id, run_tenant_id,
+            )
             raise HTTPException(
                 status_code=403,
                 detail=f"run {run_id!r} is not owned by tenant {tenant_id!r}",
             )
         ev.set()
+        # v0.8.1: audit trail. Every successful cancel is logged
+        # so a post-mortem can correlate user actions with the
+        # run-history record.
+        logger.info("cancelled run %r (workflow %r) for tenant %r",
+                    run_id, name, tenant_id)
         return {"cancelled": True, "run_id": run_id, "workflow": name}
 
     @app.post("/v1/workflows/{name}/run", response_model=RunWorkflowResponse)

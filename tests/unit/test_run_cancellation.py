@@ -245,3 +245,8 @@ def test_cancel_returns_403_for_other_tenants_run(app_and_client):
     assert "not owned" in r.json()["detail"]
     # The event was NOT set (we never authorized).
     assert not ev.is_set()
+    # v0.8.1 (HAMILLER review): the entry must also remain in the
+    # registry — a 403 is a rejected attempt, not a successful
+    # cancel. The run_workflow's finally block is the only path
+    # that pops the entry.
+    assert foreign_run_id in active_runs
