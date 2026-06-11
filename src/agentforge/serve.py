@@ -97,7 +97,7 @@ def create_app(
     state_db = Path(state_db) if state_db is not None else mailbox_root.parent / "state.db"
     workflows_dir = Path(workflows_dir) if workflows_dir is not None else mailbox_root.parent / "workflows"
 
-    app = FastAPI(title="agentforge", version="0.7.0")
+    app = FastAPI(title="agentforge", version="0.7.1")
     # SQLite-backed state (v0.6.0). One State object, three handles
     # (tenants, usage, runs) all sharing one connection + one lock.
     # Falls back to the JSON files if state_db is explicitly None.
@@ -300,6 +300,22 @@ def create_app(
                 ))
             except Exception:
                 pass  # don't fail the request if history write fails
+            # v0.7.1: emit a terminal event so WS subscribers don't see
+            # a "started" event without a follow-up. The run record
+            # already has status="quota_exceeded" so this keeps the
+            # event log and the run table in sync.
+            try:
+                run_store.events.publish(
+                    run_id=run_id, workflow=name, tenant_id=tenant_id,
+                    kind="failed",
+                    payload={
+                        "status": "quota_exceeded",
+                        "duration_seconds": duration,
+                        "error": str(e),
+                    },
+                )
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -376,7 +392,7 @@ def create_app(
         from agentforge.observability.otlp import OtlpExporter
         app.state.otlp_exporter = OtlpExporter(
             endpoint=_otlp_endpoint, registry=get_registry(),
-            service_name="agentforge", service_version="0.7.0",
+            service_name="agentforge", service_version="0.7.1",
         )
         app.state.otlp_exporter.start()
 

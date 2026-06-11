@@ -180,3 +180,70 @@ def test_ws_reconnect_cleans_up_subscriber(client_with_tenant):
     # Allow a tick for the cleanup to run.
     import time; time.sleep(0.05)
     assert bus._subscribers == {}
+
+
+# ---------------------------------------------------------------------------
+# v0.7.1 hardening tests
+# ---------------------------------------------------------------------------
+
+def test_ws_rejects_cross_origin(client_with_tenant):
+    """CSRF protection: when the Origin header is present and does not
+    match the request's Host, the WS is rejected with 1008.
+
+    (Same-origin requests, where the browser does not send Origin at
+    all, must still work — covered by the existing auth tests.)
+    """
+    client, api_key, _ = client_with_tenant
+    # TestClient lets us inject headers; we simulate the cross-origin
+    # case by setting Origin to a different host.
+    with pytest.raises(Exception):
+        with client.websocket_connect(
+            "/dashboard/ws/runs/demo",
+            cookies={"agentforge_api_key": api_key},
+            headers={"origin": "https://evil.example"},
+        ) as ws:
+            ws.receive_text()
+
+
+def test_ws_allows_same_origin(client_with_tenant):
+    """When Origin matches the Host, the WS is allowed through."""
+    client, api_key, _ = client_with_tenant
+    # TestClient sets Host to "testserver" by default. Same-origin means
+    # Origin: http://testserver (or https://testserver).
+    with client.websocket_connect(
+        "/dashboard/ws/runs/demo",
+        cookies={"agentforge_api_key": api_key},
+        headers={"origin": "http://testserver"},
+    ) as ws:
+        hello = json.loads(ws.receive_text())
+        assert hello["kind"] == "hello"
+
+
+def test_ws_tenant_isolation_blocks_other_tenants_events(
+    client_with_tenant, tmp_path: Path
+):
+    """A subscribing tenant only sees events whose tenant_id matches
+    their own. Events from a different tenant are silently dropped.
+
+    This is the security fix from the v0.7.1 review: a malicious or
+    curious authenticated tenant must not be able to observe another
+    tenant's run events.
+    """
+    client, api_key, _ = client_with_tenant
+    # Add a second tenant to the same registry so we can publish
+    # "foreign" events for them.
+    registry = client.app.state.tenants
+    other_key = registry.add("other-co")
+    bus = client.app.state.runs.events
+    with client.websocket_connect(
+        "/dashboard/ws/runs/demo",
+        cookies={"agentforge_api_key": api_key},
+    ) as ws:
+        ws.receive_text()  # hello
+        # Foreign event first (should NOT reach this socket).
+        bus.publish("r1", "demo", "other-co", "started", {"agent": "x"})
+        # Own event next (SHOULD reach this socket).
+        bus.publish("r2", "demo", "acme", "started", {"agent": "y"})
+        msg = json.loads(ws.receive_text())
+        assert msg["run_id"] == "r2"
+        assert msg["kind"] == "started"

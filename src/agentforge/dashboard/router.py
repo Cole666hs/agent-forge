@@ -384,7 +384,37 @@ async def ws_runs(
     {...}, "ts": "ISO8601"}`. The first frame is always a `hello`
     message that includes the current `max_seq` so the client can
     decide whether to reconnect-with-replay on disconnect.
+
+    v0.7.1 hardening:
+    - **CSRF protection via Origin check.** Browsers cannot set
+      custom headers on a WS handshake, but they DO send the Origin
+      header. A cross-origin page (`evil.com`) opening a WS to
+      `agentforge.example/dashboard/ws/runs/x` would carry the
+      session cookie. SameSite=Lax does not block this (Lax allows
+      top-level navigations + same-site requests). We reject the
+      upgrade with 1008 when Origin is present and does not match
+      the request's Host. Same-origin requests (no Origin header)
+      are allowed.
+    - **Tenant isolation.** A subscribing tenant only sees events
+      whose `tenant_id` matches their own. Without this filter, any
+      authenticated tenant could observe any other tenant's run
+      events for any workflow.
     """
+    # CSRF: reject cross-origin WS upgrade before accept(). The Origin
+    # header is set by the browser for cross-origin requests. We trust
+    # the Host header to identify our own host (FastAPI exposes it on
+    # the websocket scope via `headers`).
+    origin = websocket.headers.get("origin")
+    if origin is not None:
+        host = websocket.headers.get("host", "")
+        # Parse just the host:port out of the Origin (which is
+        # "scheme://host[:port]"). urllib.parse gives us a clean split
+        # without dragging in a URL object.
+        from urllib.parse import urlparse
+        origin_host = urlparse(origin).netloc
+        if not host or origin_host != host:
+            await websocket.close(code=1008, reason="cross-origin not allowed")
+            return
     # Auth via cookie. Reject before accept() so unauthorized clients
     # get a clean 1008 close (not a half-open socket).
     if not cookie:
@@ -419,8 +449,14 @@ async def ws_runs(
     # Drain replay + live. We loop manually so we can stop on
     # WebSocketDisconnect; an `async for` would also work but the
     # try/except is more explicit about the disconnect path.
+    #
+    # Tenant isolation (v0.7.1): events whose tenant_id does not
+    # match the authenticated tenant are dropped before being sent.
+    # This adds 1 string-compare per event — negligible.
     try:
         async for ev in bus.subscribe(name, since=since):
+            if ev.tenant_id and ev.tenant_id != tenant_id:
+                continue
             await websocket.send_text(json.dumps({
                 "kind": ev.kind,
                 "seq": ev.seq,

@@ -87,8 +87,20 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create tables and set the user_version if first run. Idempotent."""
-    conn.executescript("""
+    """Create tables and set the user_version if first run. Idempotent.
+
+    v0.7.1: the PRAGMA user_version bump moved INTO the executescript
+    so the entire migration is one atomic transaction (handles by
+    `executescript` internally — it issues a COMMIT first, then runs
+    the whole script in a single implicit transaction). This way a
+    crash mid-migration can't leave the DB with a v2 schema but
+    user_version=1, which would re-run the migration on next open
+    (harmless with IF NOT EXISTS but ugly). In autocommit mode
+    (isolation_level=None), wrapping the script in manual BEGIN/COMMIT
+    is NOT an option — `executescript` already issues its own COMMIT,
+    which conflicts with the manual BEGIN and breaks atomicity.
+    """
+    conn.executescript(f"""
         CREATE TABLE IF NOT EXISTS tenants (
             tenant_id    TEXT PRIMARY KEY,
             api_key_hash TEXT NOT NULL,
@@ -120,20 +132,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             workflow  TEXT NOT NULL,
             tenant_id TEXT NOT NULL,
             kind      TEXT NOT NULL,
-            payload   TEXT NOT NULL DEFAULT '{}',
+            payload   TEXT NOT NULL DEFAULT '{{}}',
             ts        TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS run_events_by_workflow_seq
             ON run_events(workflow, seq);
+        PRAGMA user_version = {SCHEMA_VERSION};
     """)
-    # Set user_version if it isn't already at SCHEMA_VERSION. Bump the
-    # version when adding migrations; add the migration block to
-    # `migrate()` below (currently a no-op stub because v0.6.0 = schema
-    # v1 and v0.7.0 only adds the run_events table idempotently).
-    cur = conn.execute("PRAGMA user_version")
-    (current,) = cur.fetchone()
-    if current < SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 # ---------------------------------------------------------------------------
@@ -558,12 +563,14 @@ class EventBus:
             seq = int(cur.lastrowid or 0)
         # Notify current subscribers. We copy the list under lock so a
         # subscriber that disconnects mid-fan-out doesn't break the
-        # iteration.
+        # iteration. Per v0.7.1 review fix: the tuple now includes
+        # tenant_id so the WS endpoint can filter by tenant without a
+        # second DB roundtrip per event.
         with self._lock:
             queues = list(self._subscribers.get(workflow, ()))
         for q in queues:
             try:
-                q.put_nowait((seq, run_id, kind, payload, ts))
+                q.put_nowait((seq, run_id, tenant_id, kind, payload, ts))
             except asyncio.QueueFull:  # pragma: no cover — bounded queue
                 pass
         return seq
@@ -618,14 +625,14 @@ class EventBus:
             # Live events. Block on the queue; the publish() call wakes
             # us up. If the queue is closed (a different code path
             # closes it) the CancelledError escapes and the iterator
-            # terminates.
+            # terminates. The 6-tuple (seq, run_id, tenant_id, kind,
+            # payload, ts) lets the WS endpoint enforce tenant isolation
+            # without a DB roundtrip.
             while True:
-                seq, run_id, kind, payload, ts = await queue.get()
+                seq, run_id, ev_tenant_id, kind, payload, ts = await queue.get()
                 yield RunEvent(
                     seq=seq, run_id=run_id, workflow=workflow,
-                    # tenant_id not delivered through the queue (not
-                    # needed by the dashboard); fall back to empty.
-                    tenant_id="",
+                    tenant_id=ev_tenant_id,
                     kind=kind, payload=payload, ts=ts,
                 )
         finally:

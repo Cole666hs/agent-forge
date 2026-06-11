@@ -156,6 +156,44 @@ def test_payload_round_trip(state: State):
     assert ev.payload == payload
 
 
+# v0.7.1: the publish() → queue fan-out must now carry tenant_id so the
+# WS endpoint can filter without a DB roundtrip. Subscribers receive
+# the tenant_id on both replay and live events.
+
+def test_live_event_carries_tenant_id(state: State):
+    """A live event delivered via the in-process queue exposes the
+    publisher's tenant_id. The DB row also has it (events_since)."""
+    bus = state.events
+    seen: list = []
+
+    async def consume():
+        async for ev in bus.subscribe("wf", since=0):
+            seen.append(ev)
+            if len(seen) >= 1:
+                return
+
+    async def runner():
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        bus.publish("r1", "wf", "tenant-X", "started")
+        await asyncio.wait_for(task, timeout=2.0)
+    asyncio.run(runner())
+    assert seen[0].tenant_id == "tenant-X"
+    # DB roundtrip also has it.
+    [db_ev] = bus.events_since("wf", 0)
+    assert db_ev.tenant_id == "tenant-X"
+
+
+def test_replay_event_carries_tenant_id(state: State):
+    """events_since() (used by the replay path) returns events with
+    tenant_id populated."""
+    bus = state.events
+    bus.publish("r1", "wf", "tenant-A", "started")
+    bus.publish("r2", "wf", "tenant-B", "finished")
+    events = bus.events_since("wf", 0)
+    assert [e.tenant_id for e in events] == ["tenant-A", "tenant-B"]
+
+
 # ---------------------------------------------------------------------------
 # subscribe() — async iterator
 # ---------------------------------------------------------------------------

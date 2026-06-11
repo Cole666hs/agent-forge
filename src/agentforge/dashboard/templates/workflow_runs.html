@@ -57,6 +57,10 @@
       const table = document.getElementById("runs-table");
       let lastSeq = 0;
       let backoff = 500;
+      // v0.7.1: jitter the reconnect delay (random in [0.5×, 1.5×] of
+      // the base) so that many clients reconnecting simultaneously
+      // don't thundering-herd the server.
+      function jitter(ms) { return Math.round(ms * (0.5 + Math.random())); }
 
       function setStatus(text) { if (statusEl) statusEl.textContent = text; }
 
@@ -88,7 +92,7 @@
         };
         ws.onclose = function () {
           setStatus("reconnecting in " + Math.round(backoff / 100) / 10 + "s…");
-          setTimeout(connect, backoff);
+          setTimeout(connect, jitter(backoff));
           backoff = Math.min(backoff * 2, 5000);
         };
         ws.onerror = function () { try { ws.close(); } catch (e) {} };
