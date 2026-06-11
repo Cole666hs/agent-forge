@@ -116,6 +116,7 @@
       if (!btn) return;  // no runs yet → button not rendered
       const tbody = document.getElementById("runs-tbody");
       let loading = false;
+      let hasMore = true;  // v0.8.1: starts true; server's X-Has-More header flips it.
       btn.addEventListener("click", function () {
         if (loading) return;
         // Cursor = oldest currently-loaded row's started_at.
@@ -129,22 +130,16 @@
         const url = "/dashboard/partials/runs/" + encodeURIComponent(name)
                     + "?before=" + encodeURIComponent(oldestTs);
         fetch(url)
-          .then(function (r) { return r.text(); })
+          .then(function (r) {
+            // v0.8.1: X-Has-More header tells us whether the button
+            // should stay visible. Replaces the v0.8.0 loose heuristic
+            // of "0 rows or fewer than 50 = done".
+            hasMore = r.headers.get("X-Has-More") === "true";
+            return r.text();
+          })
           .then(function (html) {
-            const trimmed = html.trim();
-            if (!trimmed) {
-              // No more pages — hide the button permanently.
-              btn.style.display = "none";
-              return;
-            }
-            // Append the new rows. The server returns <tr> elements
-            // directly (no <tbody> wrapper), so we can insertAdjacentHTML.
-            if (tbody) tbody.insertAdjacentHTML("beforeend", trimmed);
-            // If we got fewer rows than the default 50, we've hit
-            // the end. (Loose heuristic; the server doesn't signal
-            // "no more" explicitly.)
-            const got = (trimmed.match(/<tr\b/g) || []).length;
-            if (got < 50) btn.style.display = "none";
+            if (tbody) tbody.insertAdjacentHTML("beforeend", html);
+            if (!hasMore) btn.style.display = "none";
           })
           .catch(function () { /* keep button enabled for retry */ })
           .finally(function () {

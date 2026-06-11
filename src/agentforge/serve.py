@@ -151,12 +151,15 @@ def create_app(
             _mailbox_cache[tenant_id] = m
         return _mailbox_cache[tenant_id]
 
-    # v0.8.0 #1: active-run registry. Maps run_id -> the asyncio.Event
-    # the engine polls between steps. The cancel endpoint looks up the
-    # event by run_id and sets it. Scope: in-process only. A multi-worker
-    # deployment would need a shared cancellation channel (Redis pub/sub
-    # or a DB flag) — out of scope for v0.8.0.
-    active_runs: dict[str, asyncio.Event] = {}
+    # v0.8.0 #1: active-run registry. Maps run_id -> (tenant_id,
+    # asyncio.Event) so the cancel endpoint can enforce ownership
+    # (v0.8.1 polish: a cancel for tenant B's run_id by tenant A
+    # was previously allowed, because the dict was keyed by run_id
+    # only). The event is the one the engine polls between steps.
+    # Scope: in-process only. A multi-worker deployment would need
+    # a shared cancellation channel (Redis pub/sub or a DB flag) —
+    # out of scope for v0.8.0.
+    active_runs: dict[str, tuple[str, "asyncio.Event"]] = {}
 
     # -- routes ------------------------------------------------------------
 
@@ -274,27 +277,37 @@ def create_app(
         tenant_id: str = Depends(require_tenant),
     ) -> dict:
         """Signal an in-flight workflow run to stop at the next step
-        boundary. v0.8.0 #1.
+        boundary. v0.8.0 #1; v0.8.1 polish: ownership check.
 
         Looks up the run's asyncio.Event in the in-process
         `active_runs` registry. If the run is not in flight (already
         finished, or the daemon was restarted since it started),
-        returns 404 with a hint.
+        returns 404. If the run is in flight but owned by a
+        different tenant, returns 403 (v0.8.1 polish — previously
+        a tenant could cancel any run by guessing the run_id; the
+        48-bit UUID entropy made guessing impractical, but
+        defense-in-depth costs nothing).
 
         The cancellation is cooperative: the engine checks the event
         between steps and raises WorkflowCancelled. Long-running
         steps (a slow LLM call) finish normally; the cancellation
         takes effect on the next step boundary.
         """
-        ev = active_runs.get(run_id)
-        if ev is None:
-            # Either the run never existed, finished already, or the
-            # daemon restarted between start and cancel. We can't
-            # tell which from the registry alone — but for the caller,
-            # "not in flight" is the only useful answer.
+        entry = active_runs.get(run_id)
+        if entry is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"run {run_id!r} is not active (already finished or never existed)",
+            )
+        run_tenant_id, ev = entry
+        if run_tenant_id != tenant_id:
+            # Defense-in-depth: even if the caller happens to know
+            # another tenant's run_id, they can't cancel it. The
+            # practical exposure is low (run_id is 12 hex of UUID4,
+            # 48 bits of entropy) but the check is one string-compare.
+            raise HTTPException(
+                status_code=403,
+                detail=f"run {run_id!r} is not owned by tenant {tenant_id!r}",
             )
         ev.set()
         return {"cancelled": True, "run_id": run_id, "workflow": name}
@@ -320,9 +333,11 @@ def create_app(
         status_label = "success"
         # v0.8.0 #1: register a cancellation event for this run. The
         # engine polls it between steps. The cancel endpoint finds the
-        # event by run_id and sets it.
+        # event by run_id and sets it. v0.8.1 polish: tenant_id stored
+        # alongside the event so the cancel endpoint can enforce
+        # ownership.
         run_event = asyncio.Event()
-        active_runs[run_id] = run_event
+        active_runs[run_id] = (tenant_id, run_event)
         # v0.7.0: emit a 'started' event so dashboard subscribers see
         # the run appear in real time (vs the old 5s HTMX polling).
         run_store.events.publish(
@@ -332,7 +347,7 @@ def create_app(
         try:
             await wf.run(state=state, mailbox=mbox, llm=None,
                          agent_name=body.agent, state_db=state_db,
-                         cancel_event=active_runs.get(run_id))
+                         cancel_event=active_runs.get(run_id, ("", None))[1])
         except WorkflowCancelled:
             # v0.8.0 #1: cancellation. The cancel endpoint set the
             # active_runs[run_id] event; the engine raised this on the

@@ -345,6 +345,13 @@ def partial_runs(request: Request, name: str) -> Response:
 
     `?before=<started_at>` is the cursor for the next page (v0.8.0 #3).
     `?limit=N` controls the page size (default 50).
+
+    v0.8.1 polish: returns `X-Has-More: true|false` so the JS knows
+    whether to keep the "Load more" button visible. The server
+    queries `limit + 1` rows; if it got more than `limit`, the
+    extra row signals there's another page, and we drop it from
+    the response. This replaces the v0.8.0 loose heuristic of
+    "0 rows or fewer than 50 means done".
     """
     tenant_from_cookie_or_401(request)
     run_store = request.app.state.runs
@@ -353,10 +360,25 @@ def partial_runs(request: Request, name: str) -> Response:
         limit = int(request.query_params.get("limit", "50"))
     except ValueError:
         limit = 50
-    runs = run_store.list_runs(name, limit=limit, before=before)
+    # Query one extra row to detect "is there more?".
+    rows = run_store.list_runs(name, limit=limit + 1, before=before)
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
     templates = request.app.state.templates
-    return templates.get_template("_partial_runs_rows.html").render(
-        request=request, workflow_name=name, runs=runs,
+    # Wrap the rendered string in an HTMLResponse so we can attach
+    # the X-Has-More header. v0.8.1: the v0.8.0 implementation tried
+    # to set headers on the string returned by `get_template().render()`,
+    # which silently failed and the JS fell back to the loose
+    # "rows < 50" heuristic. The other dashboard endpoints return
+    # the raw string without headers; for THIS endpoint we need a
+    # real Response to expose the has_more signal.
+    body = templates.get_template("_partial_runs_rows.html").render(
+        request=request, workflow_name=name, runs=rows,
+    )
+    return HTMLResponse(
+        content=body,
+        headers={"X-Has-More": "true" if has_more else "false"},
     )
 
 

@@ -5,6 +5,7 @@ Covers:
 - list_runs(limit=..., before=...) composes both filters
 - The /partials/runs/{name} HTTP endpoint accepts ?before= and ?limit=
 - The end-to-end "load more" path: page 1 (50), page 2 (50), page 3 (10)
+- v0.8.1: X-Has-More header drives the JS to hide the button precisely
 """
 from __future__ import annotations
 
@@ -74,7 +75,6 @@ def test_list_runs_with_before_cursor(runs_store):
     """Passing `before=<ts>` returns only runs strictly older than the
     cursor. Useful for "load more" pagination."""
     _seed_runs(runs_store, "wf", 5)  # 5 runs, 1s apart, newest first
-    all_runs = runs_store.list_runs("wf")
     # Page 1: limit 2, no cursor → newest 2.
     page1 = runs_store.list_runs("wf", limit=2)
     assert [r.id for r in page1] == ["r0000", "r0001"]
@@ -100,24 +100,40 @@ def test_list_runs_before_excludes_cursor_value(runs_store):
     assert len(page2) == 1
 
 
-def test_partial_runs_endpoint_accepts_before_param(tmp_path: Path):
-    """The HTTP /partials/runs/{name} endpoint reads ?before= and
-    ?limit= from the query string and forwards to list_runs."""
+# ---------------------------------------------------------------------------
+# HTTP endpoint
+# ---------------------------------------------------------------------------
+
+_YAML_DEMO = """name: demo
+steps:
+  - id: echo
+    type: respond
+    inputs:
+      to: user
+      content: hi
+"""
+
+
+@pytest.fixture
+def paginated_app(tmp_path: Path):
+    """A wired app with a demo workflow on disk, ready for partial-runs
+    requests with a cookie-bearing TestClient."""
     tenants = TenantRegistry(path=tmp_path / "tenants.json")
     api_key = tenants.add("acme")
     wf_dir = tmp_path / "wf"; wf_dir.mkdir()
-    (wf_dir / "demo.yaml").write_text(
-        "name: demo\nsteps:\n  - id: echo\n    type: respond\n"
-        "    inputs:\n      to: user\n      content: hi\n",
-        encoding="utf-8",
-    )
+    (wf_dir / "demo.yaml").write_text(_YAML_DEMO, encoding="utf-8")
     app = create_app(
         tenants_path=tenants.path,
         mailbox_root=tmp_path / "mailbox",
         workflows_dir=wf_dir,
     )
-    # Seed via the in-process state handle. `app.state.runs` is the
-    # SQLiteRunStore facade; the underlying state owns the connection.
+    return app, api_key
+
+
+def test_partial_runs_endpoint_accepts_before_param(paginated_app, tmp_path: Path):
+    """The HTTP /partials/runs/{name} endpoint reads ?before= and
+    ?limit= from the query string and forwards to list_runs."""
+    app, api_key = paginated_app
     with TestClient(app) as c:
         _seed_runs(app.state.runs, "demo", 7)
         # Page 1: no cursor.
@@ -128,7 +144,6 @@ def test_partial_runs_endpoint_accepts_before_param(tmp_path: Path):
         assert r.status_code == 200
         assert r.text.count("<tr ") == 7
         # Page 2: cursor + limit=3.
-        # Get the oldest-loaded started_at from page 1 (last <tr>).
         from html.parser import HTMLParser
         class _AttrParser(HTMLParser):
             def __init__(self):
@@ -150,3 +165,44 @@ def test_partial_runs_endpoint_accepts_before_param(tmp_path: Path):
         assert r2.text.count("<tr ") == 0  # all 7 already shown, cursor excludes the boundary
         # Verify the boundary itself is NOT in the response.
         assert cursor not in r2.text
+
+
+def test_partial_runs_has_more_header(paginated_app, tmp_path: Path):
+    """v0.8.1: the partial endpoint returns X-Has-More: true|false
+    so the JS can hide the 'Load more' button precisely (replaces
+    the v0.8.0 loose heuristic of 'rows < 50 means done')."""
+    app, api_key = paginated_app
+    with TestClient(app) as c:
+        # Seed 7 runs. limit=5 means 5 + 1 extra = "has more".
+        _seed_runs(app.state.runs, "demo", 7)
+        r = c.get(
+            "/dashboard/partials/runs/demo?limit=5",
+            cookies={"agentforge_api_key": api_key},
+        )
+        assert r.status_code == 200
+        assert r.headers.get("X-Has-More") == "true"
+        # The response body has exactly `limit` rows (the extra is
+        # dropped server-side).
+        assert r.text.count("<tr ") == 5
+        # Walk the cursor to the end. After the last page,
+        # X-Has-More must be false.
+        from html.parser import HTMLParser
+        class _AttrParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.attrs = []
+            def handle_starttag(self, tag, attrs):
+                if tag == "tr":
+                    d = dict(attrs)
+                    if "data-started-at" in d:
+                        self.attrs.append(d["data-started-at"])
+        p = _AttrParser()
+        p.feed(r.text)
+        cursor = p.attrs[-1]
+        r2 = c.get(
+            f"/dashboard/partials/runs/demo?before={cursor}&limit=5",
+            cookies={"agentforge_api_key": api_key},
+        )
+        # Only 2 rows remain (7 - 5 = 2); has_more must be false.
+        assert r2.headers.get("X-Has-More") == "false"
+        assert r2.text.count("<tr ") == 2

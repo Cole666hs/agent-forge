@@ -129,10 +129,11 @@ def test_cancel_returns_200_for_active_run(app_and_client, tmp_path: Path):
         None,
     )
     assert active_runs is not None, "could not locate active_runs in closure"
-    # Pre-register a fake run.
+    # Pre-register a fake run. v0.8.1: active_runs now stores
+    # (tenant_id, Event) tuples for ownership enforcement.
     test_run_id = "run_testcancel1"
     ev = asyncio.Event()
-    active_runs[test_run_id] = ev
+    active_runs[test_run_id] = ("acme", ev)
     # Cancel via the endpoint.
     r = client.post(
         f"/v1/workflows/demo/runs/{test_run_id}/cancel",
@@ -210,3 +211,37 @@ steps:
         assert r.status_code == 200
         # After the run finishes, the entry is gone.
         assert active_runs == {}
+
+
+def test_cancel_returns_403_for_other_tenants_run(app_and_client):
+    """v0.8.1 polish: a tenant can NOT cancel a run owned by a
+    different tenant, even if they know the run_id. Defense-in-depth
+    — the run_id is 48 bits of UUID entropy, but the check costs
+    one string compare.
+    """
+    client, api_key = app_and_client
+    # Add a second tenant.
+    client.app.state.tenants.add("other-co")
+    # Reach into the closure and pre-register a run owned by other-co.
+    cancel_route = next(
+        r for r in client.app.routes
+        if r.path.endswith("/cancel")
+    )
+    cells = cancel_route.endpoint.__closure__ or ()
+    active_runs = next(
+        (c.cell_contents for c in cells if isinstance(c.cell_contents, dict)),
+        None,
+    )
+    assert active_runs is not None
+    foreign_run_id = "run_foreigntenant1"
+    ev = asyncio.Event()
+    active_runs[foreign_run_id] = ("other-co", ev)
+    # 'acme' tries to cancel other-co's run.
+    r = client.post(
+        f"/v1/workflows/demo/runs/{foreign_run_id}/cancel",
+        headers={"X-API-Key": api_key},
+    )
+    assert r.status_code == 403
+    assert "not owned" in r.json()["detail"]
+    # The event was NOT set (we never authorized).
+    assert not ev.is_set()
