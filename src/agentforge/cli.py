@@ -46,14 +46,25 @@ logger = logging.getLogger(__name__)
               help='Log format: "json" or "text" (default: text, or $AGENTFORGE_LOG_FORMAT).')
 @click.option("--log-level", default=None, envvar="AGENTFORGE_LOG_LEVEL",
               help='Log level: "DEBUG"|"INFO"|"WARNING"|"ERROR" (default: INFO, or $AGENTFORGE_LOG_LEVEL).')
+@click.option("--daemon-url", default="http://127.0.0.1:8765", show_default=True,
+              envvar="AGENTFORGE_DAEMON_URL",
+              help="Base URL of a running `agentforge serve` daemon. Used by "
+                   "subcommands that talk to the daemon (e.g. `runs cancel`).")
+@click.option("--api-key", default=None,
+              envvar="AGENTFORGE_API_KEY",
+              help="X-API-Key for the daemon. Used by subcommands that talk to the "
+                   "daemon. Prefer the env var over passing on the command line.")
 @click.pass_context
 def cli(ctx: click.Context, mailbox_root: str, state_db_path: str,
-        log_format: str | None, log_level: str | None) -> None:
+        log_format: str | None, log_level: str | None,
+        daemon_url: str, api_key: str | None) -> None:
     """agentforge — self-hosted multi-agent orchestration."""
     # Stash on context so subcommands can pick them up
     ctx.ensure_object(dict)
     ctx.obj["mailbox_root"] = Path(mailbox_root)
     ctx.obj["state_db"] = Path(state_db_path)
+    ctx.obj["daemon_url"] = daemon_url.rstrip("/")
+    ctx.obj["api_key"] = api_key
     # Configure logging once at process start. Idempotent.
     configure_logging(fmt=log_format, level=log_level)
     if ctx.invoked_subcommand is None:
@@ -488,6 +499,88 @@ def runs_show(ctx: click.Context, run_id: str) -> None:
         click.echo(f"  #{ev.seq:>5}  {ev.ts}  {ev.kind}")
         if ev.payload:
             click.echo("           payload: " + _json.dumps(ev.payload, ensure_ascii=False))
+
+
+@runs.command(name="cancel")
+@click.argument("run_id")
+@click.pass_context
+def runs_cancel(ctx: click.Context, run_id: str) -> None:
+    """Cancel a running workflow by run_id.
+
+    Looks up the run in the local SQLite state.db to find which workflow
+    it belongs to, then POSTs to the daemon's cancel endpoint. The
+    daemon's cancel handler (v0.8.0) does the actual work: it checks
+    ownership (403 if the run belongs to another tenant), sets the
+    in-process asyncio.Event, and audits the attempt (INFO on success,
+    WARNING on cross-tenant rejection). The run is stopped at the next
+    step boundary, not mid-step.
+
+    Why HTTP, not direct DB writes? The cancel handler is in-process
+    state in the daemon — it can't be replicated into the CLI without
+    a shared queue (Redis/DB polling). HTTP keeps the audit log and
+    ownership check in one place. The CLI is a thin caller.
+
+    Exit codes:
+      0  cancellation requested (200) or the run was already finished
+         (404 — the desired state is reached either way)
+      1  the run is owned by a different tenant (403)
+      2  the daemon is unreachable or returned an unexpected status
+    """
+    import requests as _req
+    from agentforge.state import State as AppState
+    # Step 1: local lookup so we know which workflow to address.
+    state = AppState(ctx.obj["state_db"])
+    try:
+        run = state.runs.get_run(run_id)
+    finally:
+        state.close()
+    if run is None:
+        click.echo(f"error: run {run_id!r} not found in state.db", err=True)
+        ctx.exit(1)
+        return
+    api_key = ctx.obj.get("api_key")
+    if not api_key:
+        click.echo(
+            "error: no API key. Set $AGENTFORGE_API_KEY or pass --api-key.",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    daemon_url = ctx.obj["daemon_url"]
+    url = f"{daemon_url}/v1/workflows/{run.workflow}/runs/{run_id}/cancel"
+    try:
+        resp = _req.post(url, headers={"X-API-Key": api_key}, timeout=10)
+    except _req.RequestException as e:
+        click.echo(f"error: cannot reach daemon at {daemon_url}: {e}", err=True)
+        ctx.exit(2)
+        return
+    if resp.status_code == 200:
+        click.echo(f"cancellation requested for run {run_id} (workflow {run.workflow!r})")
+        return
+    if resp.status_code == 404:
+        # Run is not in flight — already finished or never existed in
+        # this daemon's memory. Treat as success: the desired state
+        # (run is no longer running) is reached.
+        click.echo(f"run {run_id} is not active (already finished or never existed)")
+        return
+    if resp.status_code == 403:
+        click.echo(
+            f"error: run {run_id!r} is not owned by this tenant",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    if resp.status_code == 401:
+        click.echo("error: API key rejected by daemon (401)", err=True)
+        ctx.exit(1)
+        return
+    # Anything else is unexpected — surface the body so the user can
+    # report it without digging through server logs.
+    click.echo(
+        f"error: daemon returned {resp.status_code}: {resp.text[:300]}",
+        err=True,
+    )
+    ctx.exit(2)
 
 
 # ---------------------------------------------------------------------------
