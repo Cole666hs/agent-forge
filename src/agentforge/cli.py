@@ -678,6 +678,40 @@ def _resolve_llm(spec: str | None) -> BaseLLMAdapter | None:
 
 
 # ---------------------------------------------------------------------------
+# mcp
+# ---------------------------------------------------------------------------
+# v0.11.0: MCP server subcommand. Runs an stdio-based MCP server that
+# exposes agentforge operations (list workflows, list/show runs, run,
+# cancel) as tools for Claude Desktop, Cursor, or any MCP-aware tool.
+# See agentforge/mcp.py for the implementation.
+
+
+@cli.group()
+@click.pass_context
+def mcp(ctx: click.Context) -> None:
+    """Run an MCP server exposing agentforge operations as tools."""
+    pass
+
+
+@mcp.command(name="serve")
+@click.pass_context
+def mcp_serve(ctx: click.Context) -> None:
+    """Start the MCP server on stdio. Configure Claude Desktop / Cursor
+    to launch this command and the agent-forge operations become tools.
+    """
+    from agentforge.mcp import MCP_AVAILABLE, main as mcp_main
+    if not MCP_AVAILABLE:
+        click.echo(
+            "error: mcp package not installed. uv pip install mcp",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    rc = mcp_main(daemon_url=ctx.obj["daemon_url"], api_key=ctx.obj.get("api_key"))
+    ctx.exit(rc)
+
+
+# ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 

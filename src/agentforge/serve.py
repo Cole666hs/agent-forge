@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -85,6 +86,26 @@ class RunWorkflowRequest(BaseModel):
 
 class RunWorkflowResponse(BaseModel):
     state_keys: list[str]
+
+
+class WorkflowItem(BaseModel):
+    """One workflow file in the workflows dir. v0.11.0."""
+    name: str
+    description: str
+    path: str
+
+
+class WorkflowsListResponse(BaseModel):
+    """Response for `GET /v1/workflows`. v0.11.0."""
+    workflows: list[WorkflowItem]
+    tenant_id: str
+
+
+class RunsListResponse(BaseModel):
+    """Response for `GET /v1/runs?workflow=X`. v0.11.0."""
+    workflow: str
+    runs: list[dict]
+    count: int
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +346,82 @@ def create_app(
         logger.info("cancelled run %r (workflow %r) for tenant %r",
                     run_id, name, tenant_id)
         return {"cancelled": True, "run_id": run_id, "workflow": name}
+
+    @app.get("/v1/workflows", response_model=WorkflowsListResponse)
+    def list_workflows(
+        tenant_id: str = Depends(require_tenant),
+    ) -> WorkflowsListResponse:
+        """List all available workflow files. v0.11.0: added for MCP.
+
+        Workflows live on the daemon's filesystem (`workflows_dir`),
+        not in the tenant store — every tenant with a valid API key
+        sees the same set. The MCP server (and any external tool)
+        needs this endpoint to discover what it can `run_workflow`.
+        """
+        items = []
+        if workflows_dir.exists():
+            for p in sorted(workflows_dir.glob("*.yaml")):
+                # Read just the top-level `name` and `description` for
+                # the response — these are the only fields a tool
+                # caller needs to display. Full workflow body stays
+                # out of the API response to keep it small.
+                try:
+                    import yaml as _yaml
+                    body = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    body = {}
+                items.append({
+                    "name": body.get("name", p.stem),
+                    "description": body.get("description", ""),
+                    "path": str(p),
+                })
+        return WorkflowsListResponse(workflows=items, tenant_id=tenant_id)
+
+    @app.get("/v1/runs", response_model=RunsListResponse)
+    def list_runs(
+        workflow: str,
+        limit: int = 50,
+        before: Optional[str] = None,
+        tenant_id: str = Depends(require_tenant),
+    ) -> RunsListResponse:
+        """List runs for one workflow, newest first. v0.11.0: added
+        for MCP. Mirrors the dashboard's `/dashboard/workflows/{name}/runs`
+        page so the MCP server doesn't need its own SQLite connection.
+
+        Tenant isolation note: as of v0.11.0, the runs table is
+        global (the dashboard shows the same data to any logged-in
+        user). For multi-tenant deployments, a future change will
+        scope this query by tenant_id. Until then, an API key only
+        proves the caller is *a* tenant, not which one.
+        """
+        # Reject non-positive limits up front.
+        if limit < 1 or limit > 500:
+            raise HTTPException(
+                status_code=400,
+                detail="limit must be between 1 and 500",
+            )
+        runs = run_store.list_runs(workflow, limit=limit, before=before)
+        return RunsListResponse(
+            workflow=workflow,
+            runs=[asdict(r) for r in runs],
+            count=len(runs),
+        )
+
+    @app.get("/v1/runs/{run_id}", response_model=RunRecord)
+    def show_run(
+        run_id: str,
+        tenant_id: str = Depends(require_tenant),
+    ) -> RunRecord:
+        """Look up a single run by id. v0.11.0: added for MCP.
+        Returns 404 if not found. Same tenant-isolation caveat as
+        the list endpoint.
+        """
+        run = run_store.get_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404, detail=f"run {run_id!r} not found",
+            )
+        return run
 
     @app.post("/v1/workflows/{name}/run", response_model=RunWorkflowResponse)
     async def run_workflow(
