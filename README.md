@@ -21,10 +21,11 @@
 - **Observability** (`agentforge.observability`) — structured JSON logging, Prometheus `/metrics`, `/readyz`, request-ID propagation, instrumented mailbox / workflow / LLM
 - **MCP server** (v0.11.0, opt-in `[mcp]` extra) — exposes `agentforge` to Claude Desktop, Cursor, and any MCP-aware client over stdio. Five tools: `list_workflows`, `list_runs`, `show_run`, `run_workflow`, `cancel_run`
 - **Per-run log streaming** (v0.12.0) — `GET /v1/runs/{id}/logs` SSE endpoint + `agentforge runs logs` CLI. Replays stored events, then tails the in-process `EventBus` until the run reaches a terminal state. Heartbeats every 1s.
-- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `runs ls|show|cancel|logs` / `mcp serve` / `status`
+- **Retention policies** (v0.13.0) — background prune task in `serve` mode keeps `state.db` bounded. `AGENTFORGE_RETENTION_RUNS_DAYS` (90), `AGENTFORGE_RETENTION_EVENTS_DAYS` (30), `AGENTFORGE_RETENTION_INTERVAL_HOURS` (6). `agentforge runs prune` is the manual trigger, dry-run by default.
+- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `runs ls|show|cancel|logs|prune` / `mcp serve` / `status`
 - **Hardened systemd unit** (`contrib/systemd/agentforge@.service`) — one daemon per agent
 
-**402 tests grün** across 30+ commits. Library import is side-effect-free.
+**410 tests grün** across 30+ commits. Library import is side-effect-free.
 
 ## Quick start
 
@@ -386,7 +387,7 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), and per-run log streaming (v0.12.0) all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), and retention policies (v0.13.0) all shipped.
 
 **Open items:**
 
@@ -394,7 +395,7 @@ X-Quota-Exceeded: false
 - **Multi-process metrics** — switch to `prometheus_client` multiproc-dir mode for setups where multiple `agentforge serve` processes share a host
 - **Stripe integration for cloud tier** — per-tenant subscription state, webhook for plan upgrades/downgrades, dunning emails
 - **Workflow versioning + diff view** — store every saved workflow with a hash; show diffs in the editor before save
-- **Retention policies** — bound `runs.json` / `runs.db` size, auto-prune after N days
+- **Retention policies** — _shipped in v0.13.0_
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width
 

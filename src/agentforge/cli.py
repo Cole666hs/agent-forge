@@ -670,6 +670,92 @@ def _format_event_line(ev: dict) -> str:
     return f"seq={seq:<5}  kind={kind:<22}  ts={ts}{extra_str}"
 
 
+@runs.command(name="prune")
+@click.option("--older-than", type=int, default=None,
+              help="Delete runs whose started_at is more than N days old. "
+                   "Default: $AGENTFORGE_RETENTION_RUNS_DAYS (90). 0 disables.")
+@click.option("--events-older-than", type=int, default=None,
+              help="Delete run_events whose ts is more than N days old. "
+                   "Default: $AGENTFORGE_RETENTION_EVENTS_DAYS (30). 0 disables.")
+@click.option("--apply/--dry-run", default=False,
+              help="Actually delete rows. Default is dry-run: report what would happen.")
+@click.pass_context
+def runs_prune(
+    ctx: click.Context, older_than: int | None, events_older_than: int | None,
+    apply: bool,
+) -> None:
+    """Prune old runs and run_events rows (v0.13.0 retention hook).
+
+    Operates directly on the local state.db — no daemon roundtrip.
+    By default this is a DRY RUN: it reports the number of rows
+    that WOULD be deleted without touching anything. Pass --apply
+    to actually delete.
+
+    Both tables are pruned independently (the two don't have a
+    foreign key). Either can be skipped by setting its threshold
+    to 0 (--older-than 0 --events-older-than 0 means prune nothing).
+
+    Exit codes:
+      0  success (dry-run or applied)
+      2  could not open state.db
+    """
+    from agentforge.state import State as AppState
+    # Resolve the two thresholds. CLI flag wins; otherwise env var;
+    # otherwise the serve-mode default. 0 always means "disabled"
+    # regardless of source.
+    if older_than is None:
+        older_than = int(os.environ.get("AGENTFORGE_RETENTION_RUNS_DAYS", "90"))
+    if events_older_than is None:
+        events_older_than = int(os.environ.get(
+            "AGENTFORGE_RETENTION_EVENTS_DAYS", "30",
+        ))
+    state = AppState(ctx.obj["state_db"])
+    try:
+        if not apply:
+            # Dry-run: report the count without deleting. We use the
+            # same SQL the prune would run, wrapped in a SELECT +
+            # rollback, so the read is consistent.
+            from datetime import datetime, timedelta, timezone
+            n_runs_would = 0
+            n_events_would = 0
+            if older_than > 0:
+                cutoff = (datetime.now(timezone.utc)
+                          - timedelta(days=older_than)).isoformat()
+                with state._tx() as conn:
+                    cur = conn.execute(
+                        "SELECT COUNT(*) FROM runs WHERE started_at < ?",
+                        (cutoff,),
+                    )
+                    n_runs_would = int(cur.fetchone()[0])
+            if events_older_than > 0:
+                cutoff = (datetime.now(timezone.utc)
+                          - timedelta(days=events_older_than)).isoformat()
+                with state._tx() as conn:
+                    cur = conn.execute(
+                        "SELECT COUNT(*) FROM run_events WHERE ts < ?",
+                        (cutoff,),
+                    )
+                    n_events_would = int(cur.fetchone()[0])
+            click.echo(
+                f"DRY RUN: would prune {n_runs_would} runs (>{older_than}d) "
+                f"and {n_events_would} events (>{events_older_than}d). "
+                f"Pass --apply to execute."
+            )
+            return
+        # Apply: actually delete.
+        n_runs = state.runs.prune_older_than_days(older_than)
+        n_events = state.runs.events.prune_older_than_days(events_older_than)
+        click.echo(
+            f"pruned {n_runs} runs (>{older_than}d) "
+            f"and {n_events} events (>{events_older_than}d)."
+        )
+    except Exception as e:
+        click.echo(f"error: prune failed: {e}", err=True)
+        ctx.exit(2)
+    finally:
+        state.close()
+
+
 @runs.command(name="cancel")
 @click.argument("run_id")
 @click.pass_context

@@ -2,6 +2,24 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-06-15
+
+### Added
+- **Retention policies for `runs` and `run_events`** — without a knob, a long-running install's SQLite DB grows forever. Three env vars control the new background prune task:
+  - `AGENTFORGE_RETENTION_RUNS_DAYS` (default `90`, `0` = disabled)
+  - `AGENTFORGE_RETENTION_EVENTS_DAYS` (default `30`, `0` = disabled)
+  - `AGENTFORGE_RETENTION_INTERVAL_HOURS` (default `6`, min `1` minute)
+  The task is best-effort: a prune failure is logged at WARNING and the next interval retries. Cancellation on shutdown is clean.
+- **CLI `agentforge runs prune`** — manual trigger, operates on the local `state.db` (no daemon roundtrip). `--older-than N` and `--events-older-than N` override the env vars. **Default is dry-run**: reports what would be deleted without touching anything; pass `--apply` to actually delete. `0` is the documented "disable" sentinel.
+- **`SQLiteRunStore.prune_older_than_days(days)` + `EventBus.prune_older_than_days(days)`** — public methods returning the row count deleted. Both tables are pruned independently (no FK between them); the `runs` table's existing per-workflow cap (`max_per_workflow`, default 100) is unchanged.
+- **FastAPI `lifespan` handler** in `create_app` — replaces the implicit "app starts, runs forever" model. The retention task is spawned on startup and cancelled on shutdown. State initialization moved BEFORE `FastAPI(...)` so the lifespan closure can reference the `run_store` directly. Version constant on the FastAPI app bumped to `0.13.0`.
+
+### Fixed
+- **CI was red on every push since v0.10.0.** Two test files used a hardcoded `cwd="/home/cole/Developer/agent-forge"` when spawning the CLI as a subprocess. The path is the developer's local checkout; the runner's checkout is `/home/runner/work/agent-forge/agent-forge`, so the subprocess bombs with `FileNotFoundError` before any test logic runs. Resolved via `Path(__file__).resolve().parent.parent.parent`. 6 tests were red in CI; all green now.
+
+### Tests
+- 8 new tests in `tests/unit/test_retention.py` (DB methods, CLI dry-run/apply/zero-disabled, lifespan task spawn). Full suite **410/410 grün** (was 402).
+
 ## [0.12.0] — 2026-06-15
 
 ### Added

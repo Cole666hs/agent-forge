@@ -393,6 +393,37 @@ class SQLiteRunStore:
                 (run.workflow, run.workflow, self.max_per_workflow),
             )
 
+    def prune_older_than_days(self, days: int) -> int:
+        """Delete runs whose `started_at` is more than `days` days old.
+
+        Returns the number of rows deleted. v0.13.0 retention hook:
+        the serve mode spawns a background task that calls this on a
+        timer; the CLI exposes a manual trigger. The runs table
+        doesn't have a foreign key to run_events, so events for
+        pruned runs are NOT deleted here — call
+        `events.prune_older_than_days` separately to keep the two
+        tables in lockstep (or accept some orphan events; they age
+        out on their own clock).
+
+        `days <= 0` is a no-op (returns 0). That's the documented
+        way to disable retention from the env-var side.
+        """
+        if days <= 0:
+            return 0
+        # ISO-8601 strings sort lexicographically the same way they
+        # sort chronologically (UTC, fixed-width), so a string compare
+        # is correct without parsing back to datetime. We compute
+        # the cutoff as `now - days` in ISO format.
+        from datetime import datetime, timedelta, timezone
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "DELETE FROM runs WHERE started_at < ?", (cutoff,),
+            )
+            return int(cur.rowcount or 0)
+
     def list_runs(
         self,
         workflow: str,
@@ -718,6 +749,30 @@ class EventBus:
             )
             for r in rows
         ]
+
+    def prune_older_than_days(self, days: int) -> int:
+        """Delete run_events whose `ts` is more than `days` days old.
+
+        Returns the number of rows deleted. v0.13.0 retention hook.
+        Independent of `runs.prune_older_than_days` — the two tables
+        don't have a FK, so a run can outlive its events or vice
+        versa. The serve mode prunes both on the same timer; the CLI
+        exposes them as independent flags so users can tune.
+
+        `days <= 0` is a no-op (returns 0). That's the documented
+        way to disable retention from the env-var side.
+        """
+        if days <= 0:
+            return 0
+        from datetime import datetime, timedelta, timezone
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "DELETE FROM run_events WHERE ts < ?", (cutoff,),
+            )
+            return int(cur.rowcount or 0)
 
     async def subscribe(self, workflow: str, since: int = 0) -> AsyncIterator[RunEvent]:
         """Yield a live stream of RunEvent for one workflow.

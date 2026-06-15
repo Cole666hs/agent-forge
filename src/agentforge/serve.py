@@ -24,6 +24,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -134,30 +137,101 @@ def create_app(
     state_db: Optional[Path] = None,
     workflows_dir: Optional[Path] = None,
 ) -> FastAPI:
-    """Build the FastAPI app. No IO at import time — pass all config."""
+    """Build the FastAPI app. No IO at import time — pass all config.
+
+    v0.13.0: state is initialized BEFORE the FastAPI app, so the
+    lifespan handler can reference the run_store directly. Routes
+    are still added after app construction (the FastAPI idiomatic
+    way), but the lifespan closure captures `run_store` cleanly.
+    """
     tenants_path = Path(tenants_path)
     mailbox_root = Path(mailbox_root)
     state_db = Path(state_db) if state_db is not None else mailbox_root.parent / "state.db"
     workflows_dir = Path(workflows_dir) if workflows_dir is not None else mailbox_root.parent / "workflows"
 
-    app = FastAPI(title="agentforge", version="0.8.0")
-    # SQLite-backed state (v0.6.0). One State object, three handles
-    # (tenants, usage, runs) all sharing one connection + one lock.
-    # Falls back to the JSON files if state_db is explicitly None.
+    # -- state first (v0.13.0 refactor) ---------------------------------
     state = AppState(state_db)
-    # Backwards-compat: if the user has legacy JSON files lying around
-    # and hasn't migrated, do it now. migrate_json_to_sqlite is
-    # idempotent (INSERT OR IGNORE) so safe to call on every boot.
     legacy_tenants = tenants_path if tenants_path.exists() else None
     legacy_usage = (mailbox_root.parent / "usage.json") if (mailbox_root.parent / "usage.json").exists() else None
     legacy_runs = (mailbox_root.parent / "runs.json") if (mailbox_root.parent / "runs.json").exists() else None
     if any(p is not None for p in (legacy_tenants, legacy_usage, legacy_runs)):
         migrate_json_to_sqlite(legacy_tenants, legacy_usage, legacy_runs, state)
-    # `registry` and `usage_store` keep their old names so the rest of
-    # serve.py doesn't need to change. They're now SQLite-backed.
     registry = state.tenants
     usage_store = state.usage
     run_store = state.runs
+
+    # -- retention background task (v0.13.0) -----------------------------
+    # A long-lived asyncio task that periodically prunes old runs and
+    # run_events rows. Three env vars control it:
+    #   AGENTFORGE_RETENTION_RUNS_DAYS        (default 90, 0 = disabled)
+    #   AGENTFORGE_RETENTION_EVENTS_DAYS      (default 30, 0 = disabled)
+    #   AGENTFORGE_RETENTION_INTERVAL_HOURS   (default 6, min 1 minute)
+    # The task is best-effort: a prune failure is logged and the
+    # next interval will retry. The daemon is never taken down by
+    # a retention hiccup.
+    async def _retention_loop() -> None:
+        runs_days = int(os.environ.get("AGENTFORGE_RETENTION_RUNS_DAYS", "90"))
+        events_days = int(os.environ.get("AGENTFORGE_RETENTION_EVENTS_DAYS", "30"))
+        interval_hours = float(os.environ.get(
+            "AGENTFORGE_RETENTION_INTERVAL_HOURS", "6",
+        ))
+        interval_seconds = max(60.0, interval_hours * 3600.0)
+        # Initial sleep: stagger the first run so serve startup
+        # doesn't slam the DB with a delete right after boot.
+        await asyncio.sleep(30.0)
+        while True:
+            try:
+                n_runs = run_store.prune_older_than_days(runs_days)
+                n_events = run_store.events.prune_older_than_days(events_days)
+                if n_runs or n_events:
+                    logger.info(
+                        "retention: pruned %d runs (>%dd), %d events (>%dd)",
+                        n_runs, runs_days, n_events, events_days,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # pragma: no cover — defensive
+                logger.warning("retention: prune failed: %s", e)
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                raise
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup: spawn the retention task. The task is owned by
+        # the event loop and outlives individual requests.
+        task = asyncio.create_task(
+            _retention_loop(), name="agentforge-retention",
+        )
+        app.state.retention_task = task
+        try:
+            yield
+        finally:
+            # Shutdown: cancel the task and wait for it to finish.
+            # The task's except blocks re-raise CancelledError, so
+            # await completes quickly.
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    app = FastAPI(title="agentforge", version="0.13.0", lifespan=lifespan)
+
+    # -- app.state exposure (tests + v0.12.0 SSE) ------------------------
+    # v0.8.0 #1: active-run registry. Maps run_id -> (tenant_id,
+    # asyncio.Event) so the cancel endpoint can enforce ownership
+    # (v0.8.1 polish: a cancel for tenant B's run_id by tenant A
+    # was previously allowed, because the dict was keyed by run_id
+    # only). The event is the one the engine polls between steps.
+    # Scope: in-process only. A multi-worker deployment would need
+    # a shared cancellation channel (Redis pub/sub or a DB flag) —
+    # out of scope for v0.8.0.
+    active_runs: dict[str, tuple[str, "asyncio.Event"]] = {}
+    app.state.active_runs = active_runs
+    app.state.runs = run_store
+    app.state.events = run_store.events
 
     # -- auth dependency ---------------------------------------------------
 
@@ -187,24 +261,6 @@ def create_app(
             instrument_mailbox(m, registry=get_registry())
             _mailbox_cache[tenant_id] = m
         return _mailbox_cache[tenant_id]
-
-    # v0.8.0 #1: active-run registry. Maps run_id -> (tenant_id,
-    # asyncio.Event) so the cancel endpoint can enforce ownership
-    # (v0.8.1 polish: a cancel for tenant B's run_id by tenant A
-    # was previously allowed, because the dict was keyed by run_id
-    # only). The event is the one the engine polls between steps.
-    # Scope: in-process only. A multi-worker deployment would need
-    # a shared cancellation channel (Redis pub/sub or a DB flag) —
-    # out of scope for v0.8.0.
-    active_runs: dict[str, tuple[str, "asyncio.Event"]] = {}
-    # Expose the registry + the EventBus on app.state for tests +
-    # any future code that needs to introspect in-flight runs or
-    # publish events from outside the request handler. The objects
-    # are the same ones the route handlers use, so mutations are
-    # shared.
-    app.state.active_runs = active_runs
-    app.state.runs = run_store
-    app.state.events = run_store.events
 
     # -- routes ------------------------------------------------------------
 
