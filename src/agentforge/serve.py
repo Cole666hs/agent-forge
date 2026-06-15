@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agentforge.billing.usage import UsageStore
@@ -53,6 +53,22 @@ from agentforge.workflows.engine import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SSE helpers
+# ---------------------------------------------------------------------------
+
+def _sse_format(data: dict) -> bytes:
+    """Serialize one SSE event frame as bytes.
+
+    Each frame is `data: <json>\\n\\n`. The double newline is the
+    SSE spec's record separator (one event = one record). Multi-line
+    `data` would need a `data: ` prefix per line, but JSON on a
+    single line is fine and matches what EventSource() in browsers
+    expects.
+    """
+    return f"data: {json.dumps(data, separators=(',', ':'))}\n\n".encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +197,14 @@ def create_app(
     # a shared cancellation channel (Redis pub/sub or a DB flag) —
     # out of scope for v0.8.0.
     active_runs: dict[str, tuple[str, "asyncio.Event"]] = {}
+    # Expose the registry + the EventBus on app.state for tests +
+    # any future code that needs to introspect in-flight runs or
+    # publish events from outside the request handler. The objects
+    # are the same ones the route handlers use, so mutations are
+    # shared.
+    app.state.active_runs = active_runs
+    app.state.runs = run_store
+    app.state.events = run_store.events
 
     # -- routes ------------------------------------------------------------
 
@@ -422,6 +446,123 @@ def create_app(
                 status_code=404, detail=f"run {run_id!r} not found",
             )
         return run
+
+    @app.get("/v1/runs/{run_id}/logs")
+    def stream_run_logs(
+        run_id: str,
+        request: Request,
+        follow: bool = True,
+        since: int = 0,
+        tenant_id: str = Depends(require_tenant),
+    ) -> StreamingResponse:
+        """Server-Sent Events stream of one run's event log. v0.12.0.
+
+        Replays all stored events with seq > `since`, then (if `follow=true`
+        and the run is still in-flight) tails the in-process EventBus for
+        new events. Each event frame is `data: {...}\\n\\n`. Heartbeat
+        comments (`: keepalive\\n\\n`) every 1s keep proxies from
+        cutting the connection. The stream closes naturally with a
+        `done` frame when the run reaches a terminal state.
+
+        Tenant isolation: a tenant can only stream their own runs. The
+        run's tenant_id is checked on the lookup; live events are
+        filtered by the bus's own tenant_id field (defence in depth).
+        The run must exist before the stream opens, so 404 is the
+        proper HTTP response (not an SSE error frame).
+        """
+        # Pre-flight: validate run exists and is owned by this tenant.
+        # After we return the StreamingResponse we can't change the
+        # status code, so this has to happen up front.
+        run = run_store.get_run(run_id)
+        if run is None or run.tenant_id != tenant_id:
+            # Same posture as cancel (v0.8.1 polish): don't leak that
+            # the run exists by returning 404 vs 403 differently.
+            raise HTTPException(
+                status_code=404, detail=f"run {run_id!r} not found",
+            )
+        workflow = run.workflow
+        bus = run_store.events
+
+        async def event_stream():
+            # Track the last seq we've emitted so we don't double-fire
+            # on the boundary between replay and live tail.
+            last_seq = max(0, int(since))
+            # 1) Replay. The events_for_run query already filters by
+            # run_id and orders ASC, so we just yield each.
+            for ev in bus.events_for_run(run_id):
+                if ev.seq <= last_seq:
+                    continue
+                last_seq = ev.seq
+                yield _sse_format({
+                    "seq": ev.seq, "kind": ev.kind, "payload": ev.payload,
+                    "ts": ev.ts,
+                })
+            # 2) Live tail. Only useful while the run is in active_runs.
+            if not follow:
+                return
+            # Open one bus subscription per stream. The bus's iterator
+            # cleans up its queue in its own finally block; we use
+            # wait_for so the loop can re-check active_runs and
+            # is_disconnected periodically (and emit a heartbeat on
+            # quiet connections).
+            aiter = bus.subscribe(workflow, since=last_seq)
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    if run_id not in active_runs:
+                        # The run is no longer in flight. Emit a
+                        # final 'done' frame with the recorded
+                        # terminal status (if any) and exit.
+                        final = run_store.get_run(run_id)
+                        yield _sse_format({
+                            "kind": "done",
+                            "status": (final.status if final else "unknown"),
+                        })
+                        return
+                    try:
+                        ev = await asyncio.wait_for(
+                            aiter.__anext__(), timeout=1.0,
+                        )
+                    except asyncio.TimeoutError:
+                        # No new event in 1s. Emit a heartbeat and
+                        # re-check active_runs at the top of the loop.
+                        # (Heartbeats matter for nginx / cloudflare
+                        # idle timeouts on long-quiet runs.)
+                        yield b": keepalive\n\n"
+                        continue
+                    except StopAsyncIteration:
+                        # The subscribe generator was closed. This
+                        # shouldn't happen in normal use, but bail
+                        # safely.
+                        return
+                    if ev.run_id != run_id or ev.seq <= last_seq:
+                        # Event for a different run on the same
+                        # workflow, or a duplicate from the replay
+                        # boundary. Skip.
+                        continue
+                    last_seq = ev.seq
+                    yield _sse_format({
+                        "seq": ev.seq, "kind": ev.kind,
+                        "payload": ev.payload, "ts": ev.ts,
+                    })
+            finally:
+                # The bus's async generator cleans up its subscriber
+                # queue in its own finally block; we let GC run that
+                # by dropping our reference. Calling aclose() would
+                # be nicer but the static type lies (the stub types
+                # subscribe() as AsyncIterator, not AsyncGenerator).
+                pass
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # disable nginx buffering
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.post("/v1/workflows/{name}/run", response_model=RunWorkflowResponse)
     async def run_workflow(

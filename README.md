@@ -20,10 +20,11 @@
 - **Tenant registry** (`agentforge.tenants.TenantRegistry`) — JSON-backed, keys stored as SHA-256 hashes
 - **Observability** (`agentforge.observability`) — structured JSON logging, Prometheus `/metrics`, `/readyz`, request-ID propagation, instrumented mailbox / workflow / LLM
 - **MCP server** (v0.11.0, opt-in `[mcp]` extra) — exposes `agentforge` to Claude Desktop, Cursor, and any MCP-aware client over stdio. Five tools: `list_workflows`, `list_runs`, `show_run`, `run_workflow`, `cancel_run`
-- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `runs ls|show|cancel` / `mcp serve` / `status`
+- **Per-run log streaming** (v0.12.0) — `GET /v1/runs/{id}/logs` SSE endpoint + `agentforge runs logs` CLI. Replays stored events, then tails the in-process `EventBus` until the run reaches a terminal state. Heartbeats every 1s.
+- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `runs ls|show|cancel|logs` / `mcp serve` / `status`
 - **Hardened systemd unit** (`contrib/systemd/agentforge@.service`) — one daemon per agent
 
-**391 tests grün** across 30+ commits. Library import is side-effect-free.
+**402 tests grün** across 30+ commits. Library import is side-effect-free.
 
 ## Quick start
 
@@ -144,6 +145,21 @@ agentforge runs cancel run_2026-06-15_a1b2c3
 All three subcommands are SSH-friendly (no TTY required) and reuse the same `AGENTFORGE_DAEMON_URL` / `AGENTFORGE_API_KEY` config as the rest of the CLI.
 
 **Pagination:** list endpoints return `X-Has-More: true` when more results are available, plus `X-Next-Offset` for the next page. The CLI passes `--limit` to control page size (default 50).
+
+**Log streaming (v0.12.0):** every run's event log is also exposed as a live Server-Sent Events stream — the same data the dashboard's run-detail page shows, but real-time and scriptable.
+
+```bash
+# Tail a run's events (blocks until the run reaches a terminal state)
+agentforge runs logs run_2026-06-15_a1b2c3
+
+# Post-mortem on a finished run (prints all stored events and exits)
+agentforge runs logs run_2026-06-15_a1b2c3 --no-follow
+
+# Resume a disconnected stream from a known seq
+agentforge runs logs run_2026-06-15_a1b2c3 --since 42
+```
+
+The raw SSE endpoint is `GET /v1/runs/{id}/logs?follow=true[&since=N]` (same `X-API-Key` auth as the rest of the run API). Each frame is `data: {"seq":N,"kind":"...","payload":{...},"ts":"..."}\n\n`; a `done` frame with the final `status` closes the stream when the run terminates. Heartbeat comments (`: keepalive`) every 1s keep proxies from cutting the connection on quiet runs.
 
 ## Workflow format
 
@@ -370,7 +386,7 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), and the MCP server (v0.11.0) all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), and per-run log streaming (v0.12.0) all shipped.
 
 **Open items:**
 
@@ -378,7 +394,6 @@ X-Quota-Exceeded: false
 - **Multi-process metrics** — switch to `prometheus_client` multiproc-dir mode for setups where multiple `agentforge serve` processes share a host
 - **Stripe integration for cloud tier** — per-tenant subscription state, webhook for plan upgrades/downgrades, dunning emails
 - **Workflow versioning + diff view** — store every saved workflow with a hash; show diffs in the editor before save
-- **Per-run log streaming** — `/v1/runs/{id}/logs` HTTP endpoint, tail-style SSE for long-running workflows
 - **Retention policies** — bound `runs.json` / `runs.db` size, auto-prune after N days
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width

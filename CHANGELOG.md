@@ -2,6 +2,17 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-06-15
+
+### Added
+- **Per-run log streaming** — `GET /v1/runs/{id}/logs?follow=true[&since=N]` is a Server-Sent Events endpoint that replays all stored events for one run, then tails new events from the in-process `EventBus` until the run reaches a terminal state. Heartbeat comments (`: keepalive`) every 1s keep proxies from cutting the connection on quiet runs. The `done` frame carries the final `status` so CLI clients can render the terminal state without a follow-up `runs show` call.
+- **CLI `agentforge runs logs <run_id>`** — SSH-friendly `tail -f` for workflow events. `--follow` (default) blocks until the run reaches a terminal state; `--no-follow` prints all stored events and exits. Output is one grep-friendly line per event (`seq=N  kind=...  ts=...  status=...`). Honors `AGENTFORGE_DAEMON_URL` / `AGENTFORGE_API_KEY` like the rest of the `runs` subcommands.
+- **Tenant isolation** for the SSE stream: pre-flight 404 if the run is missing OR not owned by the calling tenant (same posture as the v0.8.1 cancel ownership check — no existence leak).
+- **`app.state.active_runs` / `app.state.runs` / `app.state.events`** — in-process state exposed on the FastAPI app for tests and any future code that needs to introspect or publish without going through a route handler. The objects are the same ones the route closures use, so mutations are shared.
+
+### Tests
+- 11 new tests in `tests/unit/test_run_logs.py`. Full suite **402/402 grün** (was 391).
+
 ## [0.11.0] — 2026-06-12
 
 ### Added

@@ -14,6 +14,7 @@ runs in production is launched via `agentforge run`. The library code
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -499,6 +500,174 @@ def runs_show(ctx: click.Context, run_id: str) -> None:
         click.echo(f"  #{ev.seq:>5}  {ev.ts}  {ev.kind}")
         if ev.payload:
             click.echo("           payload: " + _json.dumps(ev.payload, ensure_ascii=False))
+
+
+@runs.command(name="logs")
+@click.argument("run_id")
+@click.option("--follow/--no-follow", default=True,
+              help="Keep streaming until the run reaches a terminal state "
+                   "(default: follow). --no-follow prints all stored events and exits.")
+@click.option("--since", default=0, type=int,
+              help="Skip events with seq <= N (useful for reconnect-resume).")
+@click.pass_context
+def runs_logs(ctx: click.Context, run_id: str, follow: bool, since: int) -> None:
+    """Tail the event log of a run (Server-Sent Events stream).
+
+    Connects to the daemon's /v1/runs/{id}/logs endpoint and prints
+    each event as it arrives. With --follow (the default), blocks
+    until the run reaches a terminal state and the server emits a
+    `done` frame. With --no-follow, prints all stored events and
+    exits — useful for post-mortem on completed runs.
+
+    Output format (one line per event, tab-separated, easy to grep):
+
+        seq=42  kind=started          ts=2026-06-15T10:00:01+00:00
+        seq=43  kind=llm_call_started ts=2026-06-15T10:00:01+00:00
+        seq=44  kind=llm_call_completed ts=2026-06-15T10:00:02+00:00
+        seq=45  kind=finished         status=success
+        seq=46  kind=done             status=success
+
+    Exit codes:
+      0  stream ended naturally (run reached terminal state or --no-follow)
+      1  run not found in local state.db, or 404 from daemon
+      2  daemon unreachable or other transport error
+    """
+    import requests as _req
+    from agentforge.state import State as AppState
+    # Local lookup first (mirrors runs_cancel). We use this to give
+    # the right error before talking to the daemon, and to confirm
+    # the run_id is at least known to the local state.
+    state = AppState(ctx.obj["state_db"])
+    try:
+        run = state.runs.get_run(run_id)
+    finally:
+        state.close()
+    if run is None:
+        click.echo(f"error: run {run_id!r} not found in state.db", err=True)
+        ctx.exit(1)
+        return
+    api_key = ctx.obj.get("api_key")
+    if not api_key:
+        click.echo(
+            "error: no API key. Set $AGENTFORGE_API_KEY or pass --api-key.",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    daemon_url = ctx.obj["daemon_url"]
+    url = f"{daemon_url}/v1/runs/{run_id}/logs"
+    params = {"follow": "true" if follow else "false", "since": since}
+    try:
+        # stream=True so we read line-by-line. timeout=None on the
+        # read: the server sends heartbeats every 1s on quiet runs,
+        # so a 30s timeout here would still catch a dead connection.
+        resp = _req.get(
+            url, headers={"X-API-Key": api_key}, params=params,
+            stream=True, timeout=(5, 30),
+        )
+    except _req.RequestException as e:
+        click.echo(f"error: cannot reach daemon at {daemon_url}: {e}", err=True)
+        ctx.exit(2)
+        return
+    if resp.status_code == 404:
+        click.echo(
+            f"error: run {run_id!r} not found (or not owned by this tenant)",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    if resp.status_code == 401:
+        click.echo("error: API key rejected by daemon (401)", err=True)
+        ctx.exit(1)
+        return
+    if resp.status_code != 200:
+        click.echo(
+            f"error: daemon returned {resp.status_code}: {resp.text[:300]}",
+            err=True,
+        )
+        ctx.exit(2)
+        return
+    # Parse SSE: each event is `data: <json>\n\n` (or `: keepalive\n\n`).
+    # We use iter_lines and accumulate lines until we see a blank
+    # line (= end of one SSE record). Heartbeats (lines starting with
+    # ':') are silently dropped.
+    buf: list[str] = []
+    seen_done = False
+    try:
+        for raw in resp.iter_lines(decode_unicode=True):
+            if raw is None:
+                continue
+            if raw == "":
+                # End of one SSE record. Flush.
+                if buf:
+                    payload = "\n".join(buf).lstrip()
+                    if payload.startswith("data:"):
+                        json_str = payload[len("data:"):].strip()
+                        try:
+                            ev = json.loads(json_str)
+                        except json.JSONDecodeError:
+                            # Malformed event from the server. Print
+                            # and continue; don't crash the stream.
+                            click.echo(f"warn: malformed event: {json_str[:200]}", err=True)
+                            buf = []
+                            continue
+                        if ev.get("kind") == "done":
+                            # Terminal frame. Print + exit cleanly.
+                            click.echo(
+                                f"seq=-  kind=done  status={ev.get('status','unknown')}"
+                            )
+                            seen_done = True
+                            buf = []
+                            return
+                        click.echo(_format_event_line(ev))
+                    # ignore other prefixes (event:, id:, retry:, etc.)
+                buf = []
+            elif raw.startswith(":"):
+                # SSE comment (heartbeat). Drop silently.
+                continue
+            else:
+                buf.append(raw)
+    except KeyboardInterrupt:
+        # User pressed Ctrl-C. Close cleanly.
+        click.echo("(interrupted)", err=True)
+    finally:
+        resp.close()
+    if not seen_done and not follow:
+        # --no-follow: we got all the events, but the server doesn't
+        # emit a `done` frame because it returns immediately after
+        # the replay. That's expected.
+        return
+    if not seen_done:
+        # Stream ended without a `done` frame. Probably the server
+        # closed the connection (shutdown, run cancelled remotely,
+        # etc.). Exit 0 anyway — the data we have is consistent.
+        return
+
+
+def _format_event_line(ev: dict) -> str:
+    """Render one SSE event dict as a single line for stdout.
+
+    Stable column order (seq, kind, ts, payload) so it's grep-friendly.
+    """
+    seq = ev.get("seq", "-")
+    kind = ev.get("kind", "?")
+    ts = ev.get("ts", "")
+    payload = ev.get("payload") or {}
+    # Flatten a couple of common payload keys into the same line for
+    # scanning; the rest stays in a compact JSON blob.
+    extras = []
+    for k in ("status", "duration_seconds", "agent", "step_id", "error"):
+        if k in payload:
+            extras.append(f"{k}={payload[k]}")
+    if extras and len(payload) > len(extras):
+        extras.append("payload=" + json.dumps(payload, ensure_ascii=False))
+    elif extras:
+        pass  # only known keys, no need for the full payload blob
+    else:
+        if payload:
+            extras.append("payload=" + json.dumps(payload, ensure_ascii=False))
+    extra_str = "  " + "  ".join(extras) if extras else ""
+    return f"seq={seq:<5}  kind={kind:<22}  ts={ts}{extra_str}"
 
 
 @runs.command(name="cancel")
