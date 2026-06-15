@@ -61,8 +61,18 @@ def _run(args, state_db: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "agentforge.cli",
          "--state-db", str(state_db), *args],
-        capture_output=True, text=True, cwd="/home/cole/Developer/agent-forge",
+        capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
     )
+
+
+# Project root, derived from this file's location. The CLI is run as
+# a subprocess via `python -m agentforge.cli` and needs to be invoked
+# from a directory where the `agentforge` package is importable. The
+# hardcoded `/home/cole/Developer/agent-forge` that used to live
+# here broke in CI on day 1 — the runner's checkout path is
+# `/home/runner/work/agent-forge/agent-forge`, not the developer's
+# local path. Resolving from __file__ works on every host.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def test_runs_ls_prints_ascii_table(cli_env):

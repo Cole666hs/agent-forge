@@ -84,7 +84,12 @@ def test_watch_loop_handles_sigterm_gracefully(tmp_path: Path):
     mailbox = tmp_path / "mb"
     mailbox.mkdir()
 
-    # Spawn the CLI as a subprocess so we can send signals
+    # Spawn the CLI as a subprocess so we can send signals.
+    # cwd is the project root (so `python -m agentforge.cli` finds
+    # the package). Hardcoding `/home/cole/Developer/agent-forge`
+    # here broke in CI on day 1 — resolve from this test file
+    # instead.
+    project_root = Path(__file__).resolve().parent.parent.parent
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "agentforge.cli", "run", str(wf),
@@ -92,7 +97,7 @@ def test_watch_loop_handles_sigterm_gracefully(tmp_path: Path):
             "--watch", "--watch-interval", "1",
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd="/home/cole/Developer/agent-forge",
+        cwd=str(project_root),
     )
     # Let it start
     time.sleep(2)
