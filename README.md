@@ -13,13 +13,17 @@
 - **3 LLM providers** (`OpenRouter`, `MiniMax`, `Ollama`) via the `BaseOpenAICompatLLMAdapter` — async, with retry/backoff/Retry-After
 - **4 channel adapters** (`Webhook`, `Telegram`, `Discord`, `Email`) — all async, HMAC-signed webhooks
 - **YAML workflow engine** (`agentforge.workflows.Workflow`) — `receive` / `llm_call` / `respond` step types, SQLite state persistence with **tenant scoping**, per-step retry
-- **Multi-tenant API server** (`agentforge serve`) — FastAPI on `127.0.0.1:8765`, `X-API-Key` auth, tenant-scoped mailbox + workflows
+- **SQLite-backed state** (`agentforge.state.SQLiteRunStore`) — durable run records, `INSERT OR REPLACE` for safe seeding, queryable by run id and workflow
+- **Multi-tenant API server** (`agentforge serve`) — FastAPI on `127.0.0.1:8765`, `X-API-Key` auth, tenant-scoped mailbox + workflows, paginated list endpoints with `X-Has-More`
+- **Run cancellation** (v0.8.0) — POST `/v1/runs/{id}/cancel` kills an active workflow mid-flight; ownership-checked (only the tenant that started the run can cancel it); audit-logged
+- **Real-time event stream** (v0.7.0) — WebSocket `/v1/runs/{id}/stream` pushes step-by-step events as the workflow runs
 - **Tenant registry** (`agentforge.tenants.TenantRegistry`) — JSON-backed, keys stored as SHA-256 hashes
 - **Observability** (`agentforge.observability`) — structured JSON logging, Prometheus `/metrics`, `/readyz`, request-ID propagation, instrumented mailbox / workflow / LLM
-- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `status`
+- **MCP server** (v0.11.0, opt-in `[mcp]` extra) — exposes `agentforge` to Claude Desktop, Cursor, and any MCP-aware client over stdio. Five tools: `list_workflows`, `list_runs`, `show_run`, `run_workflow`, `cancel_run`
+- **CLI** (`agentforge`) — `init` / `run --watch` / `serve` / `tenants add|list|remove` / `runs ls|show|cancel` / `mcp serve` / `status`
 - **Hardened systemd unit** (`contrib/systemd/agentforge@.service`) — one daemon per agent
 
-**172 tests grün** across 16 commits. Library import is side-effect-free.
+**391 tests grün** across 30+ commits. Library import is side-effect-free.
 
 ## Quick start
 
@@ -70,6 +74,77 @@ wf = agentforge.Workflow.from_yaml("workflow.yaml")
 state = await wf.run(state=State(), mailbox=mbox, llm=llm, agent_name="mybot")
 ```
 
+## MCP server (v0.11.0)
+
+Expose `agentforge` to Claude Desktop, Cursor, and any MCP-aware client over stdio. The MCP server is a thin transport wrapper — the daemon stays the single source of truth for active runs, audit log, and run history.
+
+```bash
+# Install with MCP support (opt-in extra keeps the base install small)
+pip install -e ".[mcp]"
+
+# Configure the daemon connection (env or flags)
+export AGENTFORGE_DAEMON_URL=http://127.0.0.1:8765
+export AGENTFORGE_API_KEY=afk_...
+
+# Run the server
+agentforge mcp serve
+```
+
+**Five tools, all backed by the daemon's HTTP API:**
+
+| Tool | What it does |
+|---|---|
+| `list_workflows` | List YAML workflow files visible to the calling tenant |
+| `list_runs` | Paginated run history (newest first) |
+| `show_run` | Full run record including step-level events |
+| `run_workflow` | Start a workflow; returns the run id |
+| `cancel_run` | Stop an in-flight workflow (ownership-checked) |
+
+The server reads `AGENTFORGE_DAEMON_URL` and `AGENTFORGE_API_KEY` (or `--daemon-url` / `--api-key`) and proxies each tool call to the corresponding `/v1/...` endpoint. No second SQLite connection, no duplicate state.
+
+**Claude Desktop / Cursor config:**
+
+```json
+{
+  "mcpServers": {
+    "agentforge": {
+      "command": "agentforge",
+      "args": ["mcp", "serve"],
+      "env": {
+        "AGENTFORGE_DAEMON_URL": "http://127.0.0.1:8765",
+        "AGENTFORGE_API_KEY": "afk_..."
+      }
+    }
+  }
+}
+```
+
+## Runs & cancellation (v0.8.0 – v0.10.0)
+
+Every workflow invocation produces a `RunRecord` (id, workflow, tenant, agent, started_at, ended_at, status, duration_seconds, error) persisted in `agentforge.state.SQLiteRunStore`. Records are queryable by id, by workflow, and across all workflows for a tenant.
+
+**Cancellation** (v0.8.0): `POST /v1/runs/{id}/cancel` marks the run as cancelled and signals the executing workflow to stop at the next step boundary. Ownership-checked (only the tenant that started the run can cancel it). The audit log records who cancelled and when.
+
+**WebSocket event stream** (v0.7.0): `WS /v1/runs/{id}/stream` pushes step-by-step events as the workflow runs. The same stream powers the dashboard's run-detail page and any external consumer that wants real-time visibility.
+
+**CLI** (v0.9.0 – v0.10.0):
+
+```bash
+# List recent runs (tenant-scoped via the same X-API-Key as the daemon)
+agentforge runs ls
+agentforge runs ls --workflow echo-bot --limit 20
+
+# Show full detail for one run (status, duration, error, step events)
+agentforge runs show run_2026-06-15_a1b2c3
+
+# Cancel an in-flight run
+agentforge runs cancel run_2026-06-15_a1b2c3
+```
+
+All three subcommands are SSH-friendly (no TTY required) and reuse the same `AGENTFORGE_DAEMON_URL` / `AGENTFORGE_API_KEY` config as the rest of the CLI.
+
+**Pagination:** list endpoints return `X-Has-More: true` when more results are available, plus `X-Next-Offset` for the next page. The CLI passes `--limit` to control page size (default 50).
+
 ## Workflow format
 
 ```yaml
@@ -99,14 +174,18 @@ src/agentforge/
   core/            — FileMailbox, Message (pure data + atomic IO)
   adapters/        — base ABCs + 3 LLMs + 4 channels
   workflows/       — YAML engine + State + step registry
+  state/           — SQLite-backed run store (tenants, usage, runs)
   observability/   — logging, metrics, middleware, instrumentation
   tenants/         — TenantRegistry
-  serve.py         — FastAPI HTTP server
+  billing/         — plans + quota enforcement
+  dashboard/       — Jinja2 + HTMX self-hosted UI
+  serve.py         — FastAPI HTTP server (REST + WebSocket)
+  mcp.py           — MCP stdio server exposing agentforge as tools
   cli.py           — Click CLI
 contrib/
   systemd/         — hardened per-agent service unit
 docs/
-  plans/           — implementation plans (5 phases done, Phase 7 in progress)
+  plans/           — implementation plans (9 phases shipped, see CHANGELOG)
 ```
 
 The library deliberately avoids greenfield decisions: every component
@@ -291,10 +370,20 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-Log shipping (Loki/Datadog) · Multi-process metrics · Stripe integration for cloud tier · WebSocket streaming for sub-second dashboard updates · Workflow versioning + diff view · Dark mode · Mobile-first responsive UI.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), and the MCP server (v0.11.0) all shipped.
 
-These were identified by both the HAMILLER and NEMESIS cross-review.
-Each is a multi-day project; not in this MVP cut. Phase 7 (Observability), Phase 8 (Billing/Quota), and Phase 9 (Web Dashboard) shipped the structured-logging + metrics + health-check + quota + UI foundation; the roadmap items above build on it.
+**Open items:**
+
+- **Log shipping** (Loki / Datadog / Vector) — structured JSON logging is already there (see Observability), just needs a sink config
+- **Multi-process metrics** — switch to `prometheus_client` multiproc-dir mode for setups where multiple `agentforge serve` processes share a host
+- **Stripe integration for cloud tier** — per-tenant subscription state, webhook for plan upgrades/downgrades, dunning emails
+- **Workflow versioning + diff view** — store every saved workflow with a hash; show diffs in the editor before save
+- **Per-run log streaming** — `/v1/runs/{id}/logs` HTTP endpoint, tail-style SSE for long-running workflows
+- **Retention policies** — bound `runs.json` / `runs.db` size, auto-prune after N days
+- **Dark mode** — dashboard CSS variable toggle
+- **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width
+
+These were identified by the HAMILLER and NEMESIS cross-reviews and the v0.5–v0.11 review pass. Each is a multi-day project; not in this MVP cut.
 
 ## License
 
