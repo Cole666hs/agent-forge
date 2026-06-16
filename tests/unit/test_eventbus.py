@@ -33,25 +33,30 @@ def state(tmp_path: Path) -> Iterator[State]:
 # Schema migration
 # ---------------------------------------------------------------------------
 
-def test_schema_v2_includes_run_events(state: State):
-    """After opening a fresh State, the run_events table must exist and
-    be empty."""
+def test_schema_v3_includes_workflow_versions(state: State):
+    """After opening a fresh State, the workflow_versions table must
+    exist and be empty. (v0.14.0: third schema version, adds the
+    version history table on top of v2's run_events.)"""
     cur = state._conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='run_events'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_versions'"
     )
     assert cur.fetchone() is not None
-    cur = state._conn.execute("SELECT COUNT(*) FROM run_events")
+    cur = state._conn.execute("SELECT COUNT(*) FROM workflow_versions")
     assert cur.fetchone()[0] == 0
     # user_version reflects SCHEMA_VERSION.
     cur = state._conn.execute("PRAGMA user_version")
     (v,) = cur.fetchone()
-    assert v == SCHEMA_VERSION == 2
+    assert v == SCHEMA_VERSION == 3
 
 
-def test_schema_migrates_v1_to_v2(tmp_path: Path):
-    """Open a DB that has user_version=1 (without run_events), then a
-    State on the same path; the new table must be created, user_version
-    bumped to 2, and any pre-existing data preserved."""
+def test_schema_migrates_v1_to_v3(tmp_path: Path):
+    """Open a DB that has user_version=1 (without run_events OR
+    workflow_versions), then a State on the same path; the new
+    tables must be created, user_version bumped to 3, and any
+    pre-existing data preserved. v0.14.0 retargeted this test
+    from v1→v2 to v1→v3 (the schema is always re-applied on
+    open, so the on-disk version only matters for the `legacy`
+    tenants data preservation check)."""
     db_path = tmp_path / "legacy.db"
     # Build a v1 schema by hand (tenants/usage/runs, no run_events).
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -82,19 +87,22 @@ def test_schema_migrates_v1_to_v2(tmp_path: Path):
         PRAGMA user_version = 1;
     """)
     conn.close()
-    # Now open via State — schema bump must add run_events and preserve rows.
+    # Now open via State — schema bump must add run_events +
+    # workflow_versions and preserve rows.
     s = State(db_path)
     try:
         cur = s._conn.execute("PRAGMA user_version")
         (v,) = cur.fetchone()
-        assert v == 2
+        assert v == 3
         # Legacy row preserved.
         cur = s._conn.execute("SELECT tenant_id FROM tenants")
         assert cur.fetchone()["tenant_id"] == "legacy"
         cur = s._conn.execute("SELECT id FROM runs")
         assert cur.fetchone()["id"] == "r1"
-        # New table empty.
+        # New tables empty.
         cur = s._conn.execute("SELECT COUNT(*) FROM run_events")
+        assert cur.fetchone()[0] == 0
+        cur = s._conn.execute("SELECT COUNT(*) FROM workflow_versions")
         assert cur.fetchone()[0] == 0
     finally:
         s.close()

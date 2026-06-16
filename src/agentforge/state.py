@@ -56,7 +56,7 @@ from agentforge.core.runs import RunRecord  # re-export for callers
 
 logger = logging.getLogger("agentforge.state")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Default per-workflow run cap — matches RunStore default.
 DEFAULT_MAX_RUNS_PER_WORKFLOW = 100
@@ -137,6 +137,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS run_events_by_workflow_seq
             ON run_events(workflow, seq);
+        -- v0.14.0: workflow version history. Every save snapshots
+        -- the YAML content with a SHA-256 hash; the same content
+        -- produces the same hash (idempotent re-saves are no-ops).
+        CREATE TABLE IF NOT EXISTS workflow_versions (
+            workflow      TEXT NOT NULL,
+            version_hash  TEXT NOT NULL,
+            content       TEXT NOT NULL,
+            saved_at      TEXT NOT NULL,
+            saved_by      TEXT,
+            note          TEXT,
+            PRIMARY KEY (workflow, version_hash)
+        );
+        CREATE INDEX IF NOT EXISTS workflow_versions_by_workflow_saved
+            ON workflow_versions(workflow, saved_at DESC);
         PRAGMA user_version = {SCHEMA_VERSION};
     """)
 
@@ -169,6 +183,7 @@ class State:
         self.usage = SQLiteUsageStore(self)
         self.runs = SQLiteRunStore(self)
         self.events = EventBus(self)
+        self.workflows = SQLiteWorkflowVersionStore(self)  # v0.14.0
         logger.info("state: opened %s (schema v%d)", self.db_path, SCHEMA_VERSION)
 
     def close(self) -> None:
@@ -811,3 +826,160 @@ class EventBus:
                     subs.remove(queue)
                 if not subs:
                     self._subscribers.pop(workflow, None)
+
+
+# ---------------------------------------------------------------------------
+# Workflow versions (v0.14.0)
+# ---------------------------------------------------------------------------
+
+import difflib
+import hashlib
+from dataclasses import dataclass
+
+
+def _hash_workflow_content(content: str) -> str:
+    """Stable hash of a workflow's YAML content. SHA-256, first 12
+    hex chars — short enough to type / paste, long enough to be
+    collision-resistant for the realistic scale (a few hundred
+    versions per workflow per year)."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class WorkflowVersion:
+    """One saved snapshot of a workflow's YAML."""
+    workflow: str
+    version_hash: str
+    content: str
+    saved_at: str
+    saved_by: str | None
+    note: str | None
+
+
+class SQLiteWorkflowVersionStore:
+    """Append-only history of workflow YAML saves. v0.14.0.
+
+    Drop-in mirror of the JSON workflow dir: `save_version()` is
+    idempotent (same content + same workflow = same row, no-op).
+    `list_versions()` returns newest first; `get_version()` returns
+    the full content for one hash; `diff()` returns a unified diff
+    between any two versions of the same workflow.
+
+    Retention: not pruned by the v0.13.0 retention task. Versions
+    are typically small (a few KB of YAML) and infrequent (manual
+    saves), so growth is bounded. If a workflow becomes a hot
+    save target, the operator can DELETE FROM workflow_versions
+    manually — there's no internal FK from runs to versions.
+    """
+
+    def __init__(self, state: "State"):
+        self._state = state
+
+    def save_version(
+        self,
+        workflow: str,
+        content: str,
+        saved_by: str | None = None,
+        note: str | None = None,
+    ) -> str:
+        """Snapshot the workflow's YAML. Returns the version hash.
+        Same content under the same workflow produces the same hash
+        (idempotent — re-save with identical bytes is a no-op, the
+        original `saved_at` / `saved_by` / `note` are preserved).
+        """
+        version_hash = _hash_workflow_content(content)
+        with self._state._tx() as conn:
+            # INSERT OR IGNORE: if a row with this PK already
+            # exists, the existing row wins. We don't UPDATE on
+            # conflict because the whole point of version history
+            # is to preserve who-saved-what-when for the FIRST
+            # save of a given content.
+            conn.execute(
+                "INSERT OR IGNORE INTO workflow_versions "
+                "(workflow, version_hash, content, saved_at, saved_by, note) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    workflow, version_hash, content,
+                    datetime.now(timezone.utc).isoformat(),
+                    saved_by, note,
+                ),
+            )
+        return version_hash
+
+    def list_versions(
+        self, workflow: str, limit: int = 20,
+    ) -> list[WorkflowVersion]:
+        """Newest first. Default cap of 20 keeps the dashboard's
+        history tab from rendering a thousand-row table for an
+        active workflow."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT workflow, version_hash, content, saved_at, saved_by, note "
+                "FROM workflow_versions WHERE workflow = ? "
+                "ORDER BY saved_at DESC LIMIT ?",
+                (workflow, int(limit)),
+            )
+            rows = cur.fetchall()
+        return [
+            WorkflowVersion(
+                workflow=r["workflow"],
+                version_hash=r["version_hash"],
+                content=r["content"],
+                saved_at=r["saved_at"],
+                saved_by=r["saved_by"],
+                note=r["note"],
+            )
+            for r in rows
+        ]
+
+    def get_version(
+        self, workflow: str, version_hash: str,
+    ) -> WorkflowVersion | None:
+        """One version by hash. Returns None if not found."""
+        with self._state._tx() as conn:
+            cur = conn.execute(
+                "SELECT workflow, version_hash, content, saved_at, saved_by, note "
+                "FROM workflow_versions WHERE workflow = ? AND version_hash = ?",
+                (workflow, version_hash),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return None
+        return WorkflowVersion(
+            workflow=r["workflow"],
+            version_hash=r["version_hash"],
+            content=r["content"],
+            saved_at=r["saved_at"],
+            saved_by=r["saved_by"],
+            note=r["note"],
+        )
+
+    def diff(
+        self, workflow: str, hash_a: str, hash_b: str,
+    ) -> str:
+        """Unified diff between two versions. Returns a printable
+        string (empty when the two versions are identical). The
+        caller (HTTP handler or CLI) wraps it in a `text/plain`
+        response / `click.echo` — the store itself doesn't render
+        colors or HTML.
+
+        If either hash is unknown, raises `ValueError`. The CLI and
+        the HTTP handler translate that into a 404 / exit 1
+        respectively.
+        """
+        a = self.get_version(workflow, hash_a)
+        b = self.get_version(workflow, hash_b)
+        if a is None:
+            raise ValueError(f"version {hash_a!r} not found for {workflow!r}")
+        if b is None:
+            raise ValueError(f"version {hash_b!r} not found for {workflow!r}")
+        a_lines = a.content.splitlines(keepends=True)
+        b_lines = b.content.splitlines(keepends=True)
+        # difflib's unified_diff expects a "from" / "to" file label
+        # — the hashes are short, so they fit.
+        diff = difflib.unified_diff(
+            a_lines, b_lines,
+            fromfile=f"{workflow}@{hash_a}", tofile=f"{workflow}@{hash_b}",
+            fromfiledate=a.saved_at, tofiledate=b.saved_at,
+        )
+        return "".join(diff)

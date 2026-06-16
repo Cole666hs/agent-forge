@@ -948,6 +948,203 @@ def mcp(ctx: click.Context) -> None:
     pass
 
 
+# ---------------------------------------------------------------------------
+# workflows versions (v0.14.0)
+# ---------------------------------------------------------------------------
+
+@cli.group()
+@click.pass_context
+def workflows(ctx: click.Context) -> None:
+    """Inspect and manage saved workflow versions (v0.14.0)."""
+    pass
+
+
+@workflows.group(name="versions")
+@click.pass_context
+def workflows_versions(ctx: click.Context) -> None:
+    """List, show, diff, save, and restore workflow versions.
+
+    Every save snapshots the YAML into the workflow_versions table
+    keyed by a SHA-256 hash. Same content under the same workflow
+    produces the same hash (idempotent). The store is on the
+    local state.db — no daemon roundtrip.
+    """
+    pass
+
+
+@workflows_versions.command(name="list")
+@click.argument("workflow")
+@click.option("--limit", default=20, type=int, show_default=True)
+@click.pass_context
+def workflows_versions_list(
+    ctx: click.Context, workflow: str, limit: int,
+) -> None:
+    """List saved versions of one workflow, newest first."""
+    from agentforge.state import State as AppState
+    s = AppState(ctx.obj["state_db"])
+    try:
+        versions = s.workflows.list_versions(workflow, limit=limit)
+    finally:
+        s.close()
+    if not versions:
+        click.echo(f"(no versions saved for {workflow!r})")
+        return
+    click.echo(f"{'hash':<14}  {'saved_at':<26}  {'saved_by':<12}  note")
+    for v in versions:
+        click.echo(
+            f"{v.version_hash:<14}  {v.saved_at:<26}  "
+            f"{(v.saved_by or '-'):<12}  {v.note or ''}"
+        )
+
+
+@workflows_versions.command(name="show")
+@click.argument("workflow")
+@click.argument("version_hash")
+@click.pass_context
+def workflows_versions_show(
+    ctx: click.Context, workflow: str, version_hash: str,
+) -> None:
+    """Print the YAML content of one version."""
+    from agentforge.state import State as AppState
+    s = AppState(ctx.obj["state_db"])
+    try:
+        v = s.workflows.get_version(workflow, version_hash)
+    finally:
+        s.close()
+    if v is None:
+        click.echo(
+            f"error: version {version_hash!r} not found for {workflow!r}",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    click.echo(v.content, nl=False)
+
+
+@workflows_versions.command(name="diff")
+@click.argument("workflow")
+@click.argument("hash_a")
+@click.argument("hash_b")
+@click.pass_context
+def workflows_versions_diff(
+    ctx: click.Context, workflow: str, hash_a: str, hash_b: str,
+) -> None:
+    """Unified diff between two versions of one workflow."""
+    from agentforge.state import State as AppState
+    s = AppState(ctx.obj["state_db"])
+    try:
+        diff_text = s.workflows.diff(workflow, hash_a, hash_b)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        ctx.exit(1)
+        return
+    finally:
+        s.close()
+    if not diff_text:
+        click.echo(f"(no differences between {hash_a} and {hash_b})")
+        return
+    click.echo(diff_text, nl=False)
+
+
+@workflows_versions.command(name="save")
+@click.argument("workflow")
+@click.option("--file", "file_", type=click.Path(exists=True, dir_okay=False),
+              default=None,
+              help="Read YAML from this file instead of the workflows dir.")
+@click.option("--note", default=None,
+              help="Optional note / commit-message style.")
+@click.pass_context
+def workflows_versions_save(
+    ctx: click.Context, workflow: str, file_: str | None, note: str | None,
+) -> None:
+    """Snapshot a workflow's YAML into the version history.
+
+    Without --file, reads `<workflows_dir>/<workflow>.yaml`. The
+    CLI's default workflows_dir mirrors the serve command's
+    default (mailbox_root/../workflows).
+    """
+    from pathlib import Path as _P
+    from agentforge.state import State as AppState
+    if file_ is not None:
+        content = _P(file_).read_text(encoding="utf-8")
+    else:
+        # Reuse the CLI's resolved workflows_dir if the serve
+        # command set it; otherwise fall back to mailbox_root/../workflows.
+        workflows_dir = ctx.obj.get("workflows_dir") or (
+            ctx.obj["mailbox_root"].parent / "workflows"
+        )
+        wf_path = workflows_dir / f"{workflow}.yaml"
+        if not wf_path.exists():
+            click.echo(
+                f"error: {wf_path} does not exist. Pass --file to read from a specific path.",
+                err=True,
+            )
+            ctx.exit(1)
+            return
+        content = wf_path.read_text(encoding="utf-8")
+    s = AppState(ctx.obj["state_db"])
+    try:
+        h = s.workflows.save_version(
+            workflow, content, saved_by=None, note=note,
+        )
+    finally:
+        s.close()
+    click.echo(f"saved {workflow!r} as version {h}")
+
+
+@workflows_versions.command(name="restore")
+@click.argument("workflow")
+@click.argument("version_hash")
+@click.pass_context
+def workflows_versions_restore(
+    ctx: click.Context, workflow: str, version_hash: str,
+) -> None:
+    """Overwrite the workflow YAML on disk with a saved version.
+
+    The version row stays in the history (it's append-only); this
+    only updates the live file. A subsequent `versions save`
+    without changes is a no-op (same content = same hash).
+    """
+    from agentforge.state import State as AppState
+    from agentforge.state import _hash_workflow_content  # noqa: F401
+    s = AppState(ctx.obj["state_db"])
+    try:
+        v = s.workflows.get_version(workflow, version_hash)
+    finally:
+        s.close()
+    if v is None:
+        click.echo(
+            f"error: version {version_hash!r} not found for {workflow!r}",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    workflows_dir = ctx.obj.get("workflows_dir") or (
+        ctx.obj["mailbox_root"].parent / "workflows"
+    )
+    wf_path = workflows_dir / f"{workflow}.yaml"
+    # Atomic write (tempfile + os.replace), same pattern the
+    # dashboard editor uses.
+    import tempfile, os
+    wf_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(wf_path.parent), prefix=f".{wf_path.name}.", suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(v.content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, wf_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    click.echo(f"restored {workflow!r} from version {version_hash} -> {wf_path}")
+
+
 @mcp.command(name="serve")
 @click.pass_context
 def mcp_serve(ctx: click.Context) -> None:

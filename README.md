@@ -387,14 +387,13 @@ X-Quota-Exceeded: false
 
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), and retention policies (v0.13.0) all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), and **workflow versioning with diff/restore (v0.14.0)** all shipped.
 
 **Open items:**
-
 - **Log shipping** (Loki / Datadog / Vector) — structured JSON logging is already there (see Observability), just needs a sink config
 - **Multi-process metrics** — switch to `prometheus_client` multiproc-dir mode for setups where multiple `agentforge serve` processes share a host
 - **Stripe integration for cloud tier** — per-tenant subscription state, webhook for plan upgrades/downgrades, dunning emails
-- **Workflow versioning + diff view** — store every saved workflow with a hash; show diffs in the editor before save
+- **Workflow versioning + diff view** — _shipped in v0.14.0_
 - **Retention policies** — _shipped in v0.13.0_
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width

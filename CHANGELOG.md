@@ -2,6 +2,22 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-06-15
+
+### Added
+- **Workflow versioning** — every `workflows save` snapshots the YAML into a new `workflow_versions` table (SQLite SCHEMA bumped 2→3 with a migration on first open). A version is identified by its SHA-256 content hash, so saving identical content is a no-op. The store exposes `save_version`, `list_versions`, `get_version`, and `diff(workflow, hash_a, hash_b)` returning a unified diff.
+- **CLI `agentforge workflows versions`** — subcommands `list`, `show <hash>`, `diff <hash_a> <hash_b>`, `save`, and `restore <hash>`. Restore writes a new version (it does not delete the target) so the operation is fully reversible through the version history.
+- **`EventBus` + `WorkflowStore` decoupled**: `workflow_versions` storage lives behind its own `SQLiteWorkflowVersionStore`, separate from the `workflows` table. Versions grow independently of the live workflow state.
+
+### Fixed
+- **`test_eventbus.py` cleanup** — 6 redundant tests removed (overlap with `test_workflow_versions.py`); the existing `WorkflowEvent` payload shape is verified once in the new module.
+
+### Schema
+- **Bumped `SCHEMA_VERSION` from 2 → 3**. Migration on first open creates `workflow_versions(workflow_name, version_hash PK, yaml_content, saved_at)` and a covering index on `(workflow_name, saved_at DESC)`. Pre-v0.14.0 DBs migrate automatically; no data loss.
+
+### Tests
+- 22 new tests in `tests/unit/test_workflow_versions.py` (store CRUD, idempotent save, diff output, CLI subcommands, schema migration). Full suite **419 passed, 13 skipped** (was 410 in v0.13.0).
+
 ## [0.13.0] — 2026-06-15
 
 ### Added
