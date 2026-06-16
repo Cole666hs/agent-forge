@@ -12,7 +12,7 @@ from agentforge.core import VALID_INTENTS, FileMailbox, Mailbox, Message
 from agentforge.tenants import TenantRegistry
 from agentforge.workflows import State, Step, Workflow, WorkflowError, register_step_type
 
-__version__ = "0.18.0"
+__version__ = "1.0.0"
 __all__ = [
     "FileMailbox", "Mailbox", "Message", "VALID_INTENTS",
     "BaseChannelAdapter", "BaseLLMAdapter",

@@ -2,6 +2,27 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] — 2026-06-16
+
+**First stable release.** The 1.x line is now covered by the [stability policy](./STABILITY.md): backwards-compatible within the 1.x line, breaking changes require a 2.0 release preceded by at least one minor deprecation.
+
+### Added
+- **PyPI-ready `pyproject.toml`** — full metadata: MIT license, author, keywords, trove classifiers, project URLs (Homepage, Repository, Issues, Changelog). `pip install agentforge` will work once the package is uploaded.
+- **Build verification** — `python -m build --sdist --wheel` produces a valid sdist + wheel in < 5 s. The build script is in `[project.optional-dependencies].dev` as `build>=0.10`.
+- **`[project.urls]`** — Homepage, Repository, Issues, Changelog. Renders on the PyPI project page.
+
+### Why 1.0.0 and not 0.19.0
+
+The stability policy + version-drift fix from v0.18.0 are the last pre-1.0 prerequisites. Everything else shipped in v0.12.0–v0.18.0 was already stable: backwards-compatible APIs, schema migrations, security hardening, deploy artifacts, examples, documentation. Going to 1.0.0 means **committing** to that contract, not adding new features.
+
+### Upgrade from v0.x
+
+No code changes required. See [MIGRATION.md](./MIGRATION.md) for the full history. The v0.5.x → v0.6.0 JSON→SQLite move is the only one that needed user-side changes.
+
+### Tests
+- All 441 tests pass, 13 skipped
+- `python -m build` produces a valid sdist and wheel
+
 ## [0.18.0] — 2026-06-16
 
 ### Fixed

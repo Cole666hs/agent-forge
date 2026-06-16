@@ -4,10 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentforge"
-version = "0.18.0"
+version = "1.0.0"
 description = "Self-hosted multi-agent orchestration library and daemon"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Cole", email = "cole@agentforge.local"},
+]
+keywords = ["multi-agent", "orchestration", "llm", "self-hosted", "agents"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
     "pyyaml>=5.4",
     "aiohttp>=3.9",
@@ -24,11 +42,17 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7.0", "pytest-asyncio>=0.21"]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "ruff>=0.1"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "ruff>=0.1", "build>=0.10"]
 mcp = ["mcp>=1.0"]  # v0.11.0: MCP server (stdio transport) for external tools
 
 [project.scripts]
 agentforge = "agentforge.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Cole666hs/agent-forge"
+Repository = "https://github.com/Cole666hs/agent-forge.git"
+Issues = "https://github.com/Cole666hs/agent-forge/issues"
+Changelog = "https://github.com/Cole666hs/agent-forge/blob/master/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
