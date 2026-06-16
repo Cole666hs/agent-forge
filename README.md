@@ -385,6 +385,15 @@ X-Quota-Exceeded: false
 
 **Self-hosted tier scope (v0.4.0)**: no payment provider, no email notifications, no per-tenant custom limits, no usage history beyond the current month. These are out of scope for the self-hosted edition — the cloud tier is a separate plan.
 
+## Security
+
+See [SECURITY.md](./SECURITY.md) for the threat model, supported versions,
+and the operator checklist. Built-in defenses include API-key auth, tenant
+isolation (cross-tenant access returns 404, not 403, to avoid existence
+leaks), HMAC signing on the webhook adapter (`X-Signature: sha256=...`),
+path-traversal guards on the workflow loader, and a configurable request
+body size limit (default 1 MiB, `AGENTFORGE_MAX_BODY_BYTES`).
+
 ## Examples
 
 The `examples/` directory has 8 self-contained walkthroughs. Examples 01–06
@@ -408,7 +417,7 @@ Telegram/Discord tokens to run interactively).
 
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), workflow versioning with diff/restore (v0.14.0), and **2 new self-contained examples + CI smoke tests (v0.15.0)** all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), workflow versioning with diff/restore (v0.14.0), 2 new self-contained examples + CI smoke tests (v0.15.0), and **security hardening + SECURITY.md (v0.16.0)** all shipped.
 
 **Open items:**
 - **Log shipping** (Loki / Datadog / Vector) — structured JSON logging is already there (see Observability), just needs a sink config
@@ -417,6 +426,7 @@ Telegram/Discord tokens to run interactively).
 - **Workflow versioning + diff view** — _shipped in v0.14.0_
 - **Retention policies** — _shipped in v0.13.0_
 - **Examples verifizieren + 2 neue** — _shipped in v0.15.0_
+- **Security hardening (HMAC, path-traversal, rate-limit, SECURITY.md)** — _shipped in v0.16.0_
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width
 

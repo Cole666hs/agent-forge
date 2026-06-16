@@ -2,6 +2,25 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-06-16
+
+### Fixed (security)
+- **Path-traversal in `POST /v1/workflows/{name}/run`** — the `name` URL parameter was used to build a filesystem path without sanitization. A planted file named `..secret.yaml` inside `workflows_dir` could be loaded by sending `POST /v1/workflows/..secret/run` (Starlette normalizes the URL-encoded `%2F` but leaves `..secret` as a single path segment). Two layers of defense added:
+  1. **Name regex** — `name` must match `^[A-Za-z0-9_-]{1,64}$`. Names with dots, slashes, backslashes, or control characters are rejected with 404.
+  2. **Path containment** — the resolved absolute path of the YAML file must be inside the resolved absolute path of `workflows_dir`. A symlink planted inside `workflows_dir` pointing outside (e.g. to `/etc/passwd`) is rejected with 404 and a WARNING log line.
+- **No request body size limit** — `agentforge serve` would accept arbitrarily large JSON bodies on `/v1/workflows/{name}/run` and other POSTs, exposing the daemon to trivial OOM. Added `BodySizeLimitMiddleware`: default 1 MiB, configurable via `AGENTFORGE_MAX_BODY_BYTES`. Oversized requests get 413.
+
+### Added
+- **`SECURITY.md`** — full threat model, supported-versions table, operator checklist (reverse proxy, file permissions, key rotation), and the list of built-in defenses.
+- **`tests/unit/test_security.py`** — 3 new tests:
+  - URL-encoded `..%2F..%2Fetc%2Fpasswd` payloads are rejected
+  - `..secret` and other path-traversal names are rejected
+  - 2 MiB request bodies are rejected with non-2xx
+- **README "Security" section** — one-paragraph summary linking to `SECURITY.md`.
+
+### Tests
+- Full suite **430 passed, 13 skipped** (was 427 in v0.15.0, +3).
+
 ## [0.15.0] — 2026-06-15
 
 ### Added

@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -56,6 +57,12 @@ from agentforge.workflows.engine import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# v0.16.0: workflow names in URL paths must be single safe segments.
+# Allows alphanumerics, dash, underscore. No dots, slashes, backslashes,
+# or control characters. Dot-starting names like `..secret` are rejected.
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +633,34 @@ def create_app(
         body: RunWorkflowRequest,
         tenant_id: str = Depends(require_tenant),
     ) -> RunWorkflowResponse:
+        # v0.16.0: defense in depth — reject path-traversal and control
+        # characters in the workflow name. Starlette normalizes some
+        # (`..` segments) but `..secret` arrives here verbatim and
+        # could be a planted file. The rule: a workflow name must be a
+        # single path segment containing only letters, digits, `-`, `_`.
+        if not _SAFE_NAME_RE.match(name):
+            raise HTTPException(
+                status_code=404, detail=f"workflow {name!r} not found"
+            )
         wf_path = workflows_dir / f"{name}.yaml"
-        if not wf_path.exists():
-            raise HTTPException(status_code=404, detail=f"workflow {name!r} not found")
+        # v0.16.0: defense in depth — even after name validation, ensure
+        # the resolved path is still inside workflows_dir. A symlink
+        # planted in workflows_dir could otherwise point outside.
+        try:
+            wf_path = wf_path.resolve(strict=True)
+            workflows_resolved = Path(workflows_dir).resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            raise HTTPException(
+                status_code=404, detail=f"workflow {name!r} not found"
+            )
+        if not wf_path.is_relative_to(workflows_resolved):
+            logger.warning(
+                "workflow path escape attempt: name=%r resolved=%r workflows_dir=%r",
+                name, wf_path, workflows_resolved,
+            )
+            raise HTTPException(
+                status_code=404, detail=f"workflow {name!r} not found"
+            )
         wf = Workflow.from_yaml(wf_path)
         mbox = mailbox_for(tenant_id)
         state = EngineState(tenant_id=tenant_id)
@@ -787,6 +819,30 @@ def create_app(
     # the X-Request-Id header on the response before the FastAPI router
     # processes anything.
     app.add_middleware(RequestIdMiddleware)
+
+    # v0.16.0: body size limit. Prevents a caller from POSTing a huge
+    # JSON body and exhausting server memory. The cap is configurable
+    # via AGENTFORGE_MAX_BODY_BYTES (default 1 MiB).
+    import os as _os
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse as _JSONResponse
+    _MAX_BODY = int(_os.environ.get("AGENTFORGE_MAX_BODY_BYTES", str(1024 * 1024)))
+
+    class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            cl = request.headers.get("content-length")
+            if cl is not None:
+                try:
+                    if int(cl) > _MAX_BODY:
+                        return _JSONResponse(
+                            {"detail": f"request body too large (>{_MAX_BODY} bytes)"},
+                            status_code=413,
+                        )
+                except ValueError:
+                    pass
+            return await call_next(request)
+
+    app.add_middleware(_BodySizeLimitMiddleware)
 
     # -- dashboard wiring --------------------------------------------------
     # State that the dashboard router needs (templates, registry, paths).
