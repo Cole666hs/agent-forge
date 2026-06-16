@@ -385,9 +385,30 @@ X-Quota-Exceeded: false
 
 **Self-hosted tier scope (v0.4.0)**: no payment provider, no email notifications, no per-tenant custom limits, no usage history beyond the current month. These are out of scope for the self-hosted edition — the cloud tier is a separate plan.
 
+## Examples
+
+The `examples/` directory has 8 self-contained walkthroughs. Examples 01–06
+cover the integration surface (Telegram, Discord, webhooks, dashboard,
+Docker); examples 07–08 cover the most recent platform features.
+
+| # | Folder | What it shows |
+|---|---|---|
+| 01 | `01-hello-world` | Smallest possible workflow: one `record` step, no LLM, no adapter |
+| 02 | `02-telegram-bot` | `TelegramChannelAdapter` + workflow loop, ~70 lines |
+| 03 | `03-discord-bot` | `DiscordChannelAdapter` + workflow loop |
+| 04 | `04-webhook-listener` | `WebhookChannelAdapter` accepting external HTTP POSTs |
+| 05 | `05-multi-tenant-dashboard` | `agentforge serve` with multi-tenant routing |
+| 06 | `06-docker-deploy` | `docker-compose.yml` for production-style deploy |
+| 07 | `07-workflow-versioning` | v0.14.0 `SQLiteWorkflowVersionStore` save/list/diff/restore |
+| 08 | `08-retention-monitor` | v0.13.0 prune API, dry-run + apply + disabled sentinel |
+
+Examples 01, 07, 08 are exercised end-to-end by `tests/unit/test_examples_smoke.py`
+on every CI push; the rest are static-import-tested (they need real
+Telegram/Discord tokens to run interactively).
+
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), and **workflow versioning with diff/restore (v0.14.0)** all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), workflow versioning with diff/restore (v0.14.0), and **2 new self-contained examples + CI smoke tests (v0.15.0)** all shipped.
 
 **Open items:**
 - **Log shipping** (Loki / Datadog / Vector) — structured JSON logging is already there (see Observability), just needs a sink config
@@ -395,6 +416,7 @@ X-Quota-Exceeded: false
 - **Stripe integration for cloud tier** — per-tenant subscription state, webhook for plan upgrades/downgrades, dunning emails
 - **Workflow versioning + diff view** — _shipped in v0.14.0_
 - **Retention policies** — _shipped in v0.13.0_
+- **Examples verifizieren + 2 neue** — _shipped in v0.15.0_
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width
 

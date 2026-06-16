@@ -2,6 +2,23 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-06-15
+
+### Added
+- **Example 07 — `examples/07-workflow-versioning/`** — self-contained walkthrough of the v0.14.0 `SQLiteWorkflowVersionStore`. Saves three versions of one workflow, lists them, diffs v1→v3, shows v1's YAML, restores v1, and confirms the restore is itself a new (append-only) version. ~100 lines of pure Python; no LLM, no adapter, no daemon.
+- **Example 08 — `examples/08-retention-monitor/`** — self-contained walkthrough of the v0.13.0 prune API. Seeds 12 fake runs/events at 1/10/40/100 days old, dry-runs the prune math at a 30-day cutoff, applies it, and verifies the post-prune row counts. Includes a `prune_older_than_days(0)` test of the disabled sentinel.
+- **`tests/unit/test_examples_smoke.py`** — every example under `examples/` is now imported at test time, and the self-contained ones (01, 07, 08) are executed end-to-end via `subprocess`. CI runs this on every push, so a broken example fails the build.
+- **`examples/.gitignore`** — `state.db`, `restored-workflow.yaml`, and `mailbox/` artifacts from example runs are now ignored by git. Local dev stays clean.
+- **`## Examples` section in `README.md`** — table mapping all 8 examples to what they teach, with a callout that 01/07/08 are CI-tested and 02–06 are static-import-tested.
+
+### Verified
+- All 8 examples import cleanly (7 with `run.py`, 06 is a docker-compose example only).
+- Examples 01, 07, 08 run end-to-end on a fresh `state.db` in < 5 seconds.
+- 8 new tests in `test_examples_smoke.py` (7 parametrized imports + 1 end-to-end runner).
+
+### Tests
+- Full suite **427 passed, 13 skipped** (was 419 in v0.14.0, +8).
+
 ## [0.14.0] — 2026-06-15
 
 ### Added
