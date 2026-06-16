@@ -417,7 +417,7 @@ Telegram/Discord tokens to run interactively).
 
 ## Roadmap (next milestones)
 
-**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), workflow versioning with diff/restore (v0.14.0), 2 new self-contained examples + CI smoke tests (v0.15.0), security hardening + SECURITY.md (v0.16.0), and **Dockerfile + docker-compose + systemd unit + DEPLOY.md (v0.17.0)** all shipped.
+**Since the last cut:** WebSocket streaming (v0.7.0), run cancellation (v0.8.0), pagination, metrics page, CLI `runs` subcommand (v0.9.0), `runs cancel` (v0.10.0), the MCP server (v0.11.0), per-run log streaming (v0.12.0), retention policies (v0.13.0), workflow versioning with diff/restore (v0.14.0), 2 new self-contained examples + CI smoke tests (v0.15.0), security hardening + SECURITY.md (v0.16.0), Dockerfile + docker-compose + systemd unit + DEPLOY.md (v0.17.0), and **STABILITY.md + MIGRATION.md + version-drift fix (v0.18.0)** all shipped.
 
 **Open items:**
 - **Log shipping** (Loki / Datadog / Vector) — structured JSON logging is already there (see Observability), just needs a sink config
@@ -428,6 +428,7 @@ Telegram/Discord tokens to run interactively).
 - **Examples verifizieren + 2 neue** — _shipped in v0.15.0_
 - **Security hardening (HMAC, path-traversal, rate-limit, SECURITY.md)** — _shipped in v0.16.0_
 - **Dockerfile polish + deploy-guide (systemd / Docker)** — _shipped in v0.17.0_
+- **API stability (STABILITY.md, MIGRATION.md, version-drift fix)** — _shipped in v0.18.0_
 - **Dark mode** — dashboard CSS variable toggle
 - **Mobile-first responsive UI** — overview/tenants/workflows pages currently target ≥1024px width
 

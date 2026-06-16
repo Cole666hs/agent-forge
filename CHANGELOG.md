@@ -2,6 +2,24 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] — 2026-06-16
+
+### Fixed
+- **Version drift between three sources of truth.** Before this release, `agentforge.__version__` was stuck at 0.11.0, `FastAPI(title="agentforge", version=...)` was stuck at 0.13.0, and the OTel `service_version` was stuck at 0.8.0 — while `pyproject.toml` had been bumped all the way to 0.17.0. A user running `agentforge --version` would have seen the wrong version. Now: a single `__version__` in `agentforge/__init__.py` is imported by `serve.py` and consumed by `FastAPI(...)` and the OTel exporter. A new regression test (`tests/unit/test_version_consistency.py`) fails the build if any of `pyproject.toml`, `agentforge.__version__`, or the OpenAPI `/info/version` ever drift again. Same test also asserts that `__version__` is strict semver (`MAJOR.MINOR.PATCH`) and that `CHANGELOG.md`'s first heading matches the current version.
+
+### Added
+- **`STABILITY.md`** — the v1.0.0 contract: which APIs are stable, which are experimental, and the deprecation policy (announce in one minor, deprecate for at least one full minor, remove in the next major). Lists the public API surface in three tiers (stable, experimental, internal).
+- **`MIGRATION.md`** — covers every minor release back to v0.6.0. The v0.5.x → v0.6.0 JSON→SQLite migration is the only one that required user-side changes; everything from v0.6 onward is backwards-compatible per the deprecation policy.
+- **`tests/unit/test_version_consistency.py`** — 4 tests:
+  - `pyproject.toml` `[project] version` matches `agentforge.__version__`
+  - `pyproject.toml` `[project] version` matches the OpenAPI `/info/version`
+  - `__version__` is strict semver
+  - `CHANGELOG.md`'s first heading matches the current version
+
+### Tests
+- 4 new tests in `test_version_consistency.py`
+- Full suite **441 passed, 13 skipped** (was 437 in v0.17.0, +4)
+
 ## [0.17.0] — 2026-06-16
 
 ### Added

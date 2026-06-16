@@ -36,6 +36,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from agentforge import __version__
 from agentforge.billing.usage import UsageStore
 from agentforge.billing.quota import quota_status, QuotaExceededError
 from agentforge.core.mailbox import FileMailbox
@@ -224,7 +225,7 @@ def create_app(
             except (asyncio.CancelledError, Exception):
                 pass
 
-    app = FastAPI(title="agentforge", version="0.13.0", lifespan=lifespan)
+    app = FastAPI(title="agentforge", version=__version__, lifespan=lifespan)
 
     # -- app.state exposure (tests + v0.12.0 SSE) ------------------------
     # v0.8.0 #1: active-run registry. Maps run_id -> (tenant_id,
@@ -867,7 +868,7 @@ def create_app(
         from agentforge.observability.otlp import OtlpExporter
         app.state.otlp_exporter = OtlpExporter(
             endpoint=_otlp_endpoint, registry=get_registry(),
-            service_name="agentforge", service_version="0.8.0",
+            service_name="agentforge", service_version=__version__,
         )
         app.state.otlp_exporter.start()
 
