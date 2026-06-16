@@ -1,0 +1,44 @@
+# AgentForge systemd unit (user-mode, no root required).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/systemd/agentforge.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agentforge
+#   loginctl enable-linger $USER       # survive logout
+#
+# Logs:
+#   journalctl --user -u agentforge -f
+#
+# Stop:
+#   systemctl --user stop agentforge
+#
+# Why user-mode? agentforge is a single-user library+daemon; it doesn't
+# need root, doesn't need to bind to a privileged port, and runs fine
+# as a long-lived user process. User-mode systemd is the standard way
+# to manage such services without sudo.
+
+[Unit]
+Description=AgentForge — self-hosted multi-agent orchestration
+Documentation=https://github.com/Cole666hs/agent-forge
+After=network.target
+
+[Service]
+Type=simple
+# Adjust these paths for your install.
+WorkingDirectory=/home/%u/Developer/agent-forge
+ExecStart=/home/%u/Developer/agent-forge/.venv/bin/agentforge serve --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=5
+# Hardening: deny new privileges, restrict /tmp + /home, no core dumps.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# Allow writes to the data directory.
+ReadWritePaths=/home/%u/Developer/agent-forge/data
+# Environment — loaded from .env (do NOT commit secrets here).
+EnvironmentFile=-/home/%u/Developer/agent-forge/.env
+
+[Install]
+WantedBy=default.target

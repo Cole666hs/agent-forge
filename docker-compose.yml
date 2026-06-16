@@ -1,0 +1,32 @@
+# docker-compose.yml — production-style single-host deploy.
+#
+# Usage:
+#   cp .env.example .env   # then edit
+#   docker compose up -d
+#   docker compose exec agentforge agentforge tenants add acme
+#
+# Persistent data lives in ./data (./data/state.db, ./data/mailbox/, ...).
+# The agentforge service binds 0.0.0.0:8766 by default; put a reverse
+# proxy (see examples/06-docker-deploy/nginx.conf) in front for TLS.
+
+services:
+  agentforge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentforge:0.17.0
+    container_name: agentforge
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8766:8766"
+    volumes:
+      - ./data:/app/data
+      - ./workflows:/app/workflows:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8766/readyz', timeout=3); exit(0 if r.status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

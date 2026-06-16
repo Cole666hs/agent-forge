@@ -2,6 +2,21 @@
 
 All notable changes to `agentforge` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] — 2026-06-16
+
+### Added
+- **Root-level `Dockerfile`** — production image, ~150 MB compressed. Non-root user (UID 10001), HEALTHCHECK via `/readyz`, ENTRYPOINT/CMD split so `docker run agentforge --help` works without quoting. Layer caching optimized: `pyproject.toml` first, `src/` second.
+- **Root-level `docker-compose.yml`** — single-service stack with bind-mounted `./data` (state.db + mailbox) and read-only `./workflows`. Healthcheck, restart policy, `env_file` support.
+- **Root-level `.env.example`** — annotated template covering log level/format, body size, retention (v0.13.0), LLM provider keys, and optional OTLP.
+- **`contrib/systemd/agentforge.service`** — user-mode systemd unit (no root required). Hardened with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, `EnvironmentFile`. Survives logout via `loginctl enable-linger`.
+- **`DEPLOY.md`** — full deployment guide covering both Docker and systemd paths, plus persistence, upgrades, TLS, resource limits, backup/restore, and troubleshooting table.
+- **`tests/unit/test_deploy_artifacts.py`** — 7 sanity tests (no `docker build` in CI): Dockerfile has FROM/EXPOSE/HEALTHCHECK/USER/ENTRYPOINT and is non-root; compose is valid YAML with healthcheck; systemd unit has all 3 sections + hardening flags; DEPLOY.md exists and covers both paths.
+- **`examples/06-docker-deploy/` updated** — now plays the role of "Docker with nginx reverse proxy", while the root compose is the simple single-service case. README explicitly points to the root files for the default path.
+
+### Tests
+- 7 new tests in `test_deploy_artifacts.py`
+- Full suite **437 passed, 13 skipped** (was 430 in v0.16.0, +7)
+
 ## [0.16.0] — 2026-06-16
 
 ### Fixed (security)

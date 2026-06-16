@@ -1,36 +1,50 @@
-# Example 6 — Docker Deploy
+# Example 6 — Docker deploy (with optional nginx)
 
-Full stack in Docker: the API server + dashboard, with persistent
-volumes for mailbox/state/tenants/usage, and an optional nginx reverse
-proxy in front. Use this as a starting point for production.
+The root-level `Dockerfile` and `docker-compose.yml` (v0.17.0) cover the
+basic single-service case. This example adds the **optional nginx
+reverse-proxy layer** for TLS termination and rate-limiting. Use this
+when you need:
 
-## What you'll get
+- HTTPS in front of the API
+- `client_max_body_size` larger than the 1 MiB default (e.g. for big
+  webhook payloads)
+- IP-based rate limits
 
-- `agentforge` daemon on `http://127.0.0.1:8766`
-- Dashboard at `http://127.0.0.1:8766/dashboard`
-- Persistent state across restarts (`./data/`)
-- Optional nginx proxy on `http://127.0.0.1:80` (uncomment in compose)
+## Files in this example
 
-## Run it
+| File | What it adds over the root `docker-compose.yml` |
+|---|---|
+| `nginx.conf` | Reverse proxy with WebSocket/SSE support, 16 MB body limit, 300s read timeout |
+| `Dockerfile` | Identical to the root one; kept here for self-contained reference |
+| `docker-compose.yml` | Adds the `nginx` service (commented out by default) |
+| `env.example` | More verbose env-var documentation |
+
+## Quick start (nginx disabled)
+
+```bash
+# Use the root-level compose (simpler, no nginx)
+cd ../..
+cp .env.example .env && $EDITOR .env
+docker compose up -d
+```
+
+## Quick start (with nginx)
 
 ```bash
 cd examples/06-docker-deploy
+cp env.example .env && $EDITOR .env
+# 1. Uncomment the nginx service in docker-compose.yml
+# 2. Mount your TLS certs in /etc/nginx/ssl/ (or use Caddy instead)
 docker compose up -d
-
-# Verify
-docker compose logs -f agentforge
-
-# Create a tenant
-docker compose exec agentforge agentforge tenants add acme
-
-# Open the dashboard
-xdg-open http://127.0.0.1:8766/dashboard/login
-# Default admin token: "admin" (set AGENTFORGE_ADMIN_TOKEN in .env)
 ```
+
+The reverse proxy listens on `:80` (and `:443` once you mount certs).
+The agentforge service is no longer published on `:8766`; it talks to
+nginx over the compose network only.
 
 ## Configuration
 
-Edit `env.example` to set:
+Edit `.env` (in this example, or in the repo root) to set:
 
 - `AGENTFORGE_ADMIN_TOKEN` — dashboard login (default: `admin`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP collector for metrics (optional)
